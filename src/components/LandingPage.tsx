@@ -302,8 +302,8 @@ export const LandingPage: React.FC<LandingPageProps> = ({ onEnterApp, onSelectCa
                   <div className="w-2.5 h-2.5 rounded-full bg-emerald-500 animate-ping" />
                   <span className="font-extrabold text-white">CONEXA LIVE</span>
                 </div>
-                <span className="text-[10px] font-bold bg-emerald-500/20 text-emerald-400 px-2 py-0.5 rounded-full border border-emerald-500/30">
-                  📍 Zona Centro & Alrededores
+                <span className="text-[10px] font-bold bg-blue-500/20 text-blue-300 px-2 py-0.5 rounded-full border border-blue-500/30">
+                  Ejemplo de interfaz • Datos de demostración
                 </span>
               </div>
 
@@ -313,32 +313,32 @@ export const LandingPage: React.FC<LandingPageProps> = ({ onEnterApp, onSelectCa
                   <div className="flex items-center gap-3">
                     <img 
                       src="https://images.unsplash.com/photo-1540569014015-19a7be504e3a?auto=format&fit=crop&q=80&w=120"
-                      alt="Carlos Mansilla"
+                      alt="Ejemplo ilustrativo de perfil profesional"
                       className="w-11 h-11 rounded-xl object-cover border border-slate-700"
                     />
                     <div>
-                      <div className="flex items-center gap-1.5">
-                        <h4 className="font-bold text-white text-xs">Carlos Mansilla</h4>
-                        <span className="bg-blue-500/20 text-blue-400 text-[10px] font-bold px-1.5 py-0.2 rounded-md flex items-center gap-0.5 border border-blue-500/30">
-                          <CheckCircle2 size={10} /> Verificado
+                      <div className="flex items-center gap-1.5 flex-wrap">
+                        <h4 className="font-bold text-white text-xs">Carlos M.</h4>
+                        <span className="bg-slate-800 text-slate-300 text-[10px] font-bold px-1.5 py-0.2 rounded-md border border-slate-700">
+                          Ejemplo de perfil
                         </span>
                       </div>
-                      <p className="text-[11px] text-slate-400 font-medium">Electricista Matriculado</p>
+                      <p className="text-[11px] text-slate-400 font-medium">Electricista • Ilustrativo</p>
                     </div>
                   </div>
                   <div className="text-right">
                     <div className="flex items-center gap-1 text-amber-400 text-xs font-bold justify-end">
                       <Star size={12} fill="currentColor" /> 4.9
                     </div>
-                    <span className="text-[10px] text-slate-500">28 trabajos</span>
+                    <span className="text-[9px] text-slate-500 block">Dato de muestra</span>
                   </div>
                 </div>
 
                 <div className="flex items-center justify-between text-[11px] pt-2 border-t border-slate-900">
                   <span className="text-emerald-400 font-bold flex items-center gap-1">
-                    <span className="w-1.5 h-1.5 rounded-full bg-emerald-400" /> Disponible hoy
+                    <span className="w-1.5 h-1.5 rounded-full bg-emerald-400" /> Disponible
                   </span>
-                  <span className="text-slate-400">A 2.1 km • Centro</span>
+                  <span className="text-slate-500 text-[10px]">Demostración de radio</span>
                 </div>
               </div>
 
@@ -348,24 +348,24 @@ export const LandingPage: React.FC<LandingPageProps> = ({ onEnterApp, onSelectCa
                   <div className="flex items-center gap-3">
                     <img 
                       src="https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?auto=format&fit=crop&q=80&w=120"
-                      alt="Marcelo Juárez"
+                      alt="Ejemplo ilustrativo de perfil profesional"
                       className="w-11 h-11 rounded-xl object-cover border border-slate-700"
                     />
                     <div>
-                      <div className="flex items-center gap-1.5">
-                        <h4 className="font-bold text-white text-xs">Marcelo "Chelo" Juárez</h4>
-                        <span className="bg-blue-500/20 text-blue-400 text-[10px] font-bold px-1.5 py-0.2 rounded-md flex items-center gap-0.5 border border-blue-500/30">
-                          <CheckCircle2 size={10} /> Verificado
+                      <div className="flex items-center gap-1.5 flex-wrap">
+                        <h4 className="font-bold text-white text-xs">Marcelo J.</h4>
+                        <span className="bg-slate-800 text-slate-300 text-[10px] font-bold px-1.5 py-0.2 rounded-md border border-slate-700">
+                          Ejemplo de perfil
                         </span>
                       </div>
-                      <p className="text-[11px] text-slate-400 font-medium">Plomería & Gas Natural</p>
+                      <p className="text-[11px] text-slate-400 font-medium">Plomería & Gas • Ilustrativo</p>
                     </div>
                   </div>
                   <div className="text-right">
                     <div className="flex items-center gap-1 text-amber-400 text-xs font-bold justify-end">
                       <Star size={12} fill="currentColor" /> 4.8
                     </div>
-                    <span className="text-[10px] text-slate-500">19 trabajos</span>
+                    <span className="text-[9px] text-slate-500 block">Dato de muestra</span>
                   </div>
                 </div>
 
@@ -373,7 +373,7 @@ export const LandingPage: React.FC<LandingPageProps> = ({ onEnterApp, onSelectCa
                   <span className="text-emerald-400 font-bold flex items-center gap-1">
                     <span className="w-1.5 h-1.5 rounded-full bg-emerald-400" /> Disponible
                   </span>
-                  <span className="text-slate-400">A 3.4 km • Barrio Norte</span>
+                  <span className="text-slate-500 text-[10px]">Demostración de radio</span>
                 </div>
               </div>
 
@@ -825,29 +825,33 @@ export const LandingPage: React.FC<LandingPageProps> = ({ onEnterApp, onSelectCa
             {activeMockupTab === 'list' && (
               <div className="space-y-3 animate-fade-in">
                 <div className="flex items-center justify-between text-xs pb-2 border-b border-slate-800">
-                  <span className="font-bold text-slate-300">Profesionales disponibles</span>
-                  <span className="text-[10px] text-emerald-400 font-bold bg-emerald-500/10 px-2 py-0.5 rounded-full">En tiempo real</span>
+                  <span className="font-bold text-slate-300">Demostración de listado</span>
+                  <span className="text-[10px] text-blue-400 font-bold bg-blue-500/10 px-2 py-0.5 rounded-full border border-blue-500/20">
+                    Datos de demostración
+                  </span>
                 </div>
 
                 <div className="bg-slate-900 border border-slate-800 rounded-2xl p-3 flex items-center justify-between gap-3">
                   <div className="flex items-center gap-3">
                     <img 
                       src="https://images.unsplash.com/photo-1540569014015-19a7be504e3a?auto=format&fit=crop&q=80&w=120" 
-                      alt="Carlos Mansilla"
-                      className="w-12 h-12 rounded-xl object-cover"
+                      alt="Ejemplo ilustrativo de perfil profesional"
+                      className="w-12 h-12 rounded-xl object-cover border border-slate-700"
                     />
                     <div>
-                      <div className="flex items-center gap-1.5">
-                        <span className="font-bold text-xs text-white">Carlos Mansilla</span>
-                        <span className="text-[10px] bg-blue-500/20 text-blue-400 font-bold px-1.5 rounded">Verificado</span>
+                      <div className="flex items-center gap-1.5 flex-wrap">
+                        <span className="font-bold text-xs text-white">Carlos M.</span>
+                        <span className="text-[10px] bg-slate-800 text-slate-300 font-bold px-1.5 rounded border border-slate-700">
+                          Perfil ilustrativo
+                        </span>
                       </div>
-                      <p className="text-[11px] text-slate-400">Electricista Matriculado</p>
-                      <span className="text-[10px] text-emerald-400">● Disponible hoy</span>
+                      <p className="text-[11px] text-slate-400">Electricidad • Especialidad de ejemplo</p>
+                      <span className="text-[10px] text-slate-500">● Disponibilidad de muestra</span>
                     </div>
                   </div>
                   <div className="text-right">
                     <span className="text-amber-400 text-xs font-bold">★ 4.9</span>
-                    <p className="text-[10px] text-slate-500">2.1 km</p>
+                    <p className="text-[9px] text-slate-500">Muestra</p>
                   </div>
                 </div>
 
@@ -855,21 +859,23 @@ export const LandingPage: React.FC<LandingPageProps> = ({ onEnterApp, onSelectCa
                   <div className="flex items-center gap-3">
                     <img 
                       src="https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?auto=format&fit=crop&q=80&w=120" 
-                      alt="Marcelo Juárez"
-                      className="w-12 h-12 rounded-xl object-cover"
+                      alt="Ejemplo ilustrativo de perfil profesional"
+                      className="w-12 h-12 rounded-xl object-cover border border-slate-700"
                     />
                     <div>
-                      <div className="flex items-center gap-1.5">
-                        <span className="font-bold text-xs text-white">Marcelo Juárez</span>
-                        <span className="text-[10px] bg-blue-500/20 text-blue-400 font-bold px-1.5 rounded">Verificado</span>
+                      <div className="flex items-center gap-1.5 flex-wrap">
+                        <span className="font-bold text-xs text-white">Marcelo J.</span>
+                        <span className="text-[10px] bg-slate-800 text-slate-300 font-bold px-1.5 rounded border border-slate-700">
+                          Perfil ilustrativo
+                        </span>
                       </div>
-                      <p className="text-[11px] text-slate-400">Plomería & Gas Natural</p>
-                      <span className="text-[10px] text-emerald-400">● Disponible hoy</span>
+                      <p className="text-[11px] text-slate-400">Plomería • Especialidad de ejemplo</p>
+                      <span className="text-[10px] text-slate-500">● Disponibilidad de muestra</span>
                     </div>
                   </div>
                   <div className="text-right">
                     <span className="text-amber-400 text-xs font-bold">★ 4.8</span>
-                    <p className="text-[10px] text-slate-500">3.4 km</p>
+                    <p className="text-[9px] text-slate-500">Muestra</p>
                   </div>
                 </div>
               </div>
@@ -878,16 +884,23 @@ export const LandingPage: React.FC<LandingPageProps> = ({ onEnterApp, onSelectCa
             {/* Screen 3: Perfil Profesional */}
             {activeMockupTab === 'profile' && (
               <div className="space-y-3 animate-fade-in text-xs">
-                <div className="flex items-center gap-3 pb-3 border-b border-slate-800">
+                <div className="flex items-center justify-between pb-2 border-b border-slate-800">
+                  <span className="font-bold text-slate-300">Ficha de perfil</span>
+                  <span className="text-[10px] text-blue-400 font-bold bg-blue-500/10 px-2 py-0.5 rounded-full border border-blue-500/20">
+                    Ejemplo de perfil
+                  </span>
+                </div>
+
+                <div className="flex items-center gap-3 pb-2">
                   <img 
                     src="https://images.unsplash.com/photo-1540569014015-19a7be504e3a?auto=format&fit=crop&q=80&w=120" 
-                    alt="Carlos"
-                    className="w-14 h-14 rounded-2xl object-cover"
+                    alt="Ejemplo ilustrativo de perfil profesional"
+                    className="w-14 h-14 rounded-2xl object-cover border border-slate-700"
                   />
                   <div>
-                    <h4 className="font-extrabold text-sm text-white">Carlos Mansilla</h4>
+                    <h4 className="font-extrabold text-sm text-white">Carlos M. (Perfil ilustrativo)</h4>
                     <p className="text-slate-400">Electricista con matrícula habilitante</p>
-                    <span className="text-amber-400 font-bold">★ 4.9 (28 valoraciones)</span>
+                    <span className="text-slate-400 text-[11px]">Calificaciones y valoraciones de clientes</span>
                   </div>
                 </div>
 
@@ -918,7 +931,7 @@ export const LandingPage: React.FC<LandingPageProps> = ({ onEnterApp, onSelectCa
                 <div className="flex items-center justify-between pb-2 border-b border-slate-800 text-[11px]">
                   <div className="flex items-center gap-2">
                     <div className="w-2 h-2 rounded-full bg-emerald-400" />
-                    <span className="font-bold text-white">Conversación con Carlos M.</span>
+                    <span className="font-bold text-white">Chat de demostración</span>
                   </div>
                   <span className="text-slate-400 text-[10px]">🔒 Teléfono oculto</span>
                 </div>

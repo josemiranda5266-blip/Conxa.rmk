@@ -1,8 +1,4 @@
 /// <reference types="vite/client" />
-declare module '*.json' {
-  const value: any;
-  export default value;
-}
 
 import { initializeApp, getApps, getApp } from 'firebase/app';
 import { getAuth, Auth } from 'firebase/auth';
