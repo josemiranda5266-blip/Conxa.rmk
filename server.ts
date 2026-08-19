@@ -57,15 +57,15 @@ function getFirebaseAdmin(): any {
 
       credential = firebaseAdmin.cert(certObj);
     } catch (err: any) {
-      console.error('[FIREBASE ADMIN] Error parseando FIREBASE_SERVICE_ACCOUNT:', err?.message || err);
+      console.error('[FIREBASE ADMIN] Error parseando FIREBASE_SERVICE_ACCOUNT');
     }
   }
 
   if (!credential && gacEnv) {
     try {
       credential = firebaseAdmin.applicationDefault();
-    } catch (err: any) {
-      console.error('[FIREBASE ADMIN] Error con GOOGLE_APPLICATION_CREDENTIALS:', err?.message || err);
+    } catch {
+      // ADC unavailable
     }
   }
 
@@ -86,9 +86,20 @@ function getFirebaseAdmin(): any {
     console.log('[FIREBASE ADMIN] Inicializado exitosamente.');
     return firebaseAdminApp;
   } catch (err: any) {
-    console.error('[FIREBASE ADMIN] Error en initializeApp:', err?.message || err);
+    console.error('[FIREBASE ADMIN] Error en initializeApp');
     return null;
   }
+}
+
+/**
+ * Timing-safe string comparison to prevent timing attack vulnerabilities
+ */
+function safeTimingCompare(a?: string | null, b?: string | null): boolean {
+  if (!a || !b) return false;
+  const bufA = Buffer.from(a, 'utf8');
+  const bufB = Buffer.from(b, 'utf8');
+  if (bufA.length !== bufB.length) return false;
+  return crypto.timingSafeEqual(bufA, bufB);
 }
 
 async function startServer() {
@@ -114,18 +125,50 @@ async function startServer() {
     res.setHeader("X-Frame-Options", "SAMEORIGIN");
     res.setHeader("X-XSS-Protection", "1; mode=block");
     res.setHeader("Referrer-Policy", "strict-origin-when-cross-origin");
+    res.setHeader("Permissions-Policy", "camera=(), microphone=(), geolocation=(self)");
+    res.setHeader("Cross-Origin-Opener-Policy", "same-origin-allow-popups");
     next();
   });
 
-  app.use(express.json({ limit: '1mb', verify: (req, _res, buf) => { (req as any).rawBody = Buffer.from(buf); } }));
+  // CORS Policy Configuration for API Endpoints
+  app.use((req: Request, res: Response, next: NextFunction) => {
+    res.setHeader("Access-Control-Allow-Origin", "*");
+    res.setHeader("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS");
+    res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Requested-With, X-Signature, X-Request-Id, X-Radar-Secret, X-N8N-Secret, X-Admin-Key, X-Hub-Signature-256");
+    if (req.method === "OPTIONS") {
+      return res.status(204).end();
+    }
+    next();
+  });
 
-  // In-Memory Rate Limiter (Token Bucket per IP)
+  // Request Body Size Limit with Raw Body Preservation for Webhook Signature Verification
+  app.use(express.json({
+    limit: '1mb',
+    verify: (req, _res, buf) => {
+      (req as any).rawBody = Buffer.from(buf);
+    }
+  }));
+
+  app.use(express.urlencoded({ extended: false, limit: '1mb' }));
+
+  // In-Memory Rate Limiter (Token Bucket per IP with Automatic Garbage Collection)
   const rateLimitMap = new Map<string, { count: number; resetTime: number }>();
+  
+  // Sweep expired rate limit entries every 5 minutes to prevent memory leaks
+  setInterval(() => {
+    const now = Date.now();
+    for (const [ip, record] of rateLimitMap.entries()) {
+      if (now > record.resetTime) {
+        rateLimitMap.delete(ip);
+      }
+    }
+  }, 5 * 60 * 1000);
+
   const rateLimiter = (req: Request, res: Response, next: NextFunction) => {
-    const ip = req.ip || req.headers['x-forwarded-for'] as string || '127.0.0.1';
+    const ip = req.ip || (req.headers['x-forwarded-for'] as string)?.split(',')[0]?.trim() || '127.0.0.1';
     const now = Date.now();
     const windowMs = 60 * 1000; // 1 minute window
-    const maxRequests = 30; // max 30 requests per minute
+    const maxRequests = 40; // 40 requests per minute per IP
 
     const record = rateLimitMap.get(ip) || { count: 0, resetTime: now + windowMs };
 
@@ -147,14 +190,24 @@ async function startServer() {
     next();
   };
 
-  // Helper function to sanitize PII (phone numbers and exact addresses) before sending to Gemini or logging
+  /**
+   * Helper function to sanitize PII (Personally Identifiable Information) before sending to AI or logging
+   * Redacts Argentine phone numbers, email addresses, exact street addresses, and financial/tax identifiers.
+   */
   function sanitizePIIForAI(text: string): string {
     if (!text) return "";
     return text
-      // Redact Argentine phone numbers (e.g., +54 9 385 1234567, 0385-15412345, 11-2345-6789)
-      .replace(/(\+?54\s*9?\s*)?(\d{2,4})[\s\-]*(\d{6,8})/g, '[TELÉFONO_REDACTADO_POR_PRIVACIDAD]')
-      // Redact street address numbers (e.g. San Martín 1234, Av Belgrano 452)
-      .replace(/(calle|av\.|avenida|pasaje)?\s+[a-záéíóúñ\s]{3,20}\s+\d{1,5}/gi, '[DOMICILIO_PROTEGIDO]');
+      // Redact Argentine phone numbers (e.g., +54 9 385 1234567, 0385-15412345, 11-2345-6789, etc.)
+      .replace(/(\+?54\s*9?\s*)?(\d{2,4})[\s\-]*(\d{6,8})/g, '[TELÉFONO_REDACTADO]')
+      // Redact Email addresses
+      .replace(/[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/g, '[EMAIL_REDACTADO]')
+      // Redact DNI, CUIT, CUIL (Tax / Identity numbers)
+      .replace(/\b(20|23|24|27|30|33|34)[-.\s]?\d{8}[-.\s]?\d\b/g, '[CUIT_CUIL_REDACTADO]')
+      .replace(/\b\d{1,2}[-.\s]?\d{3}[-.\s]?\d{3}\b/g, '[DOCUMENTO_REDACTADO]')
+      // Redact CBU / CVU (22 digits)
+      .replace(/\b\d{22}\b/g, '[DATO_BANCARIO_REDACTADO]')
+      // Redact street address numbers (e.g. San Martín 1234, Av Belgrano 452, Pasaje Rivadavia 24)
+      .replace(/(calle|av\.|avenida|pasaje|pje\.|bvd\.|bulevar|ruta)?\s+[a-záéíóúñ\s]{3,30}\s+\d{1,5}/gi, '[DOMICILIO_PROTEGIDO]');
   }
 
   // Shared Gemini SDK client instance
@@ -163,7 +216,6 @@ async function startServer() {
     if (!aiClient) {
       const apiKey = process.env.GEMINI_API_KEY;
       if (!apiKey || apiKey === "MY_GEMINI_API_KEY") {
-        console.warn("GEMINI_API_KEY is missing or unconfigured.");
         return null;
       }
       aiClient = new GoogleGenAI({
@@ -178,108 +230,6 @@ async function startServer() {
     return aiClient;
   }
 
-  // Health endpoint
-  app.get("/api/health", (_req, res) => {
-    res.json({ status: "ok", app: "CONEXA Private Services Network", timestamp: new Date().toISOString() });
-  });
-
-  // AI Natural Language Search & Request Interpreter (Rate limited & PII sanitized)
-  app.post("/api/gemini/parse-request", rateLimiter, async (req: Request, res: Response) => {
-    try {
-      const auth = await verifyAuthToken(req);
-      if (!auth.isAuthenticated) {
-        return res.status(401).json({ error: "Se requiere autenticación para utilizar la IA de CONEXA.", code: "UNAUTHORIZED" });
-      }
-
-      const { userPrompt } = req.body;
-      if (!userPrompt || typeof userPrompt !== "string") {
-        return res.status(400).json({ error: "Parámetro userPrompt inválido" });
-      }
-
-      // Sanitize PII before AI processing
-      const sanitizedPrompt = sanitizePIIForAI(userPrompt.trim().slice(0, 500));
-
-      const ai = getGeminiClient();
-      if (!ai) {
-        // Fallback rule-based parsing if key is missing
-        return res.json({
-          category: "Hogar & Construcción",
-          professionName: "Plomero / Fontanero",
-          title: "Solicitud de servicio",
-          description: sanitizedPrompt,
-          urgency: userPrompt.toLowerCase().includes("urgente") ? "URGENTE" : "NORMAL",
-          estimatedBudgetArs: 35000,
-          suggestedKeywords: ["plomero", "reparación", "pérdida"]
-        });
-      }
-
-      const response = await ai.models.generateContent({
-        model: "gemini-3.6-flash",
-        contents: `Analizá la siguiente solicitud de un usuario en Argentina para contratar un servicio profesional o solucionar un problema: "${sanitizedPrompt}". 
-Responde ÚNICAMENTE en formato JSON estructurado con estas claves:
-- category: categoría de servicio sugerida (ej. "Hogar & Construcción", "Profesionales & Graduados", "Tecnología & Digital", "Salud & Estética", "Mecánica & Vehículos", "Servicios & Eventos")
-- professionName: nombre de la profesión específica (ej. "Plomero / Fontanero", "Electricista Matriculado", "Gasista Matriculado", "Abogado", "Técnico de Computación")
-- title: título resumido y profesional de la solicitud
-- description: descripción pulida en español para publicar
-- urgency: "NORMAL", "ALTA" o "URGENTE"
-- estimatedBudgetArs: entero estimado sugerido en pesos argentinos ARS (o 0 si incierto)
-- suggestedKeywords: arreglo de palabras clave para filtrar`,
-        config: {
-          responseMimeType: "application/json",
-          systemInstruction: "Sos el asistente inteligente oficial de la app CONEXA en Argentina. Convertís solicitudes en lenguaje natural en especificaciones de servicio limpias y estructuradas. NUNCA incluyas datos personales."
-        }
-      });
-
-      const parsed = JSON.parse(response.text || "{}");
-      return res.json(parsed);
-    } catch (err: any) {
-      console.error("Error al procesar solicitud con IA");
-      return res.status(500).json({ error: "Error interno al procesar la solicitud con IA. Intente nuevamente." });
-    }
-  });
-
-  // AI Moderation & Fraud Check endpoint
-  app.post("/api/gemini/moderate", rateLimiter, async (req: Request, res: Response) => {
-    try {
-      const auth = await verifyAuthToken(req);
-      if (!auth.isAuthenticated) {
-        return res.status(401).json({ error: "Se requiere autenticación para utilizar la moderación de CONEXA.", code: "UNAUTHORIZED" });
-      }
-
-      const { text, contextType } = req.body; // contextType: 'chat' | 'review' | 'request'
-      if (!text || typeof text !== "string") {
-        return res.json({ isSafe: true, flags: [], riskScore: 0, analysis: "Sin texto provisto." });
-      }
-
-      const sanitizedText = sanitizePIIForAI(text.trim().slice(0, 1000));
-      const ai = getGeminiClient();
-
-      if (!ai) {
-        return res.json({ isSafe: true, flags: [], riskScore: 0, analysis: "Verificación estándar superada." });
-      }
-
-      const response = await ai.models.generateContent({
-        model: "gemini-3.6-flash",
-        contents: `Analizá el siguiente texto de ${contextType || 'plataforma'} en busca de fraude, cobros por fuera sospechosos, acoso, spam o reseñas falsas: "${sanitizedText}".
-Responde en JSON con:
-- isSafe: boolean
-- flags: arreglo de etiquetas detectadas (ej. ["OFF_PLATFORM_PAYMENT_WARNING", "SPAM", "HARASSMENT", "FAKE_REVIEW_SUSPECTED"])
-- riskScore: número entre 0 y 100
-- analysis: explicación breve de 1 oración en español
-- warningMessageToUser: mensaje preventivo para el usuario si riskScore > 40`,
-        config: {
-          responseMimeType: "application/json"
-        }
-      });
-
-      const parsed = JSON.parse(response.text || "{}");
-      return res.json(parsed);
-    } catch (err: any) {
-      console.error("Error en moderación con IA");
-      return res.json({ isSafe: true, flags: [], riskScore: 0, analysis: "Verificación estándar de seguridad superada." });
-    }
-  });
-
   // Centralized Auth Verification & Middleware
   async function verifyAuthToken(req: Request): Promise<{
     isAuthenticated: boolean;
@@ -288,15 +238,17 @@ Responde en JSON con:
     role?: string;
     errorReason?: string;
   }> {
-    const authHeader = req.headers.authorization;
-    const adminKeyHeader = req.headers['x-admin-key'] || req.headers['x-radar-secret'];
-    const expectedSecret = process.env.ADMIN_SECRET_KEY || process.env.RADAR_WEBHOOK_SECRET;
-
-    // Check operator secret key (ONLY if expectedSecret is explicitly configured and non-empty)
-    if (adminKeyHeader && expectedSecret && adminKeyHeader === expectedSecret) {
-      return { isAuthenticated: true, isAdmin: true, userId: 'admin_secret_operator', role: 'SUPER_ADMIN' };
+    // 1. Dedicated S2S Admin Secret Key for automated backend tasks (if explicitly configured)
+    const adminKeyHeader = req.headers['x-admin-key'] as string;
+    const expectedAdminSecret = process.env.ADMIN_SECRET_KEY?.trim();
+    if (adminKeyHeader && expectedAdminSecret && expectedAdminSecret.length >= 24) {
+      if (safeTimingCompare(adminKeyHeader, expectedAdminSecret)) {
+        return { isAuthenticated: true, isAdmin: true, userId: 'admin_service_operator', role: 'SUPER_ADMIN' };
+      }
     }
 
+    // 2. Authoritative Firebase ID Token verification
+    const authHeader = req.headers.authorization;
     if (!authHeader || !authHeader.startsWith('Bearer ')) {
       return { isAuthenticated: false, isAdmin: false, errorReason: "MISSING_BEARER_TOKEN" };
     }
@@ -326,13 +278,13 @@ Responde en JSON con:
         userId: decodedToken.uid,
         role
       };
-    } catch (err: any) {
+    } catch {
       return { isAuthenticated: false, isAdmin: false, errorReason: "INVALID_FIREBASE_ID_TOKEN" };
     }
   }
 
   // ==========================================
-  // MERCADO PAGO MARKETPLACE - OAuth + Checkout Pro
+  // MERCADO PAGO ENCRYPTION & OAUTH HELPERS
   // ==========================================
   function requireEnv(name: string): string {
     const value = process.env[name];
@@ -384,10 +336,14 @@ Responde en JSON con:
     if (!payload || !sig) return null;
     const secret = requireEnv('MP_OAUTH_STATE_SECRET');
     const expected = crypto.createHmac('sha256', secret).update(payload).digest('base64url');
-    if (sig.length !== expected.length || !crypto.timingSafeEqual(Buffer.from(sig), Buffer.from(expected))) return null;
-    const parsed = JSON.parse(Buffer.from(payload, 'base64url').toString('utf8'));
-    if (!parsed.uid || typeof parsed.exp !== 'number' || parsed.exp < Date.now()) return null;
-    return { uid: parsed.uid };
+    if (!safeTimingCompare(sig, expected)) return null;
+    try {
+      const parsed = JSON.parse(Buffer.from(payload, 'base64url').toString('utf8'));
+      if (!parsed.uid || typeof parsed.exp !== 'number' || parsed.exp < Date.now()) return null;
+      return { uid: parsed.uid };
+    } catch {
+      return null;
+    }
   }
 
   let cachedDbId: string | null = null;
@@ -404,7 +360,7 @@ Responde en JSON con:
         }
       }
     } catch (err) {
-      console.error('[FIREBASE ADMIN] Error leyendo firestoreDatabaseId:', err);
+      console.error('[FIREBASE ADMIN] Error leyendo firestoreDatabaseId');
     }
     return '(default)';
   }
@@ -416,17 +372,25 @@ Responde en JSON con:
     if (dbId && dbId !== '(default)') {
       try {
         return getAdminFirestore(adminApp, dbId);
-      } catch (err: any) {
-        console.error(`[FIREBASE ADMIN] Error obteniendo base de datos nombrada '${dbId}', reintentando por defecto:`, err?.message || err);
+      } catch {
         return adminApp.firestore();
       }
     }
     return adminApp.firestore();
   }
 
-  // Diagnostic Endpoint: Only returns booleans
-  app.get('/api/auth/config-status', (_req: Request, res: Response) => {
-    const firebaseAdminApp = getFirebaseAdmin();
+  // ==========================================
+  // 1. HEALTH & DIAGNOSTIC ENDPOINTS
+  // ==========================================
+
+  // Public Health Endpoint
+  app.get("/api/health", (_req, res) => {
+    res.json({ status: "ok", app: "CONEXA Private Services Network", timestamp: new Date().toISOString() });
+  });
+
+  // Diagnostic Endpoint: Returns non-sensitive status flags (No secrets or tokens returned)
+  app.get('/api/auth/config-status', rateLimiter, (_req: Request, res: Response) => {
+    const fbAdmin = getFirebaseAdmin();
     const mpEnv = validateMercadoPagoEnv();
 
     let clientConfigured = false;
@@ -445,7 +409,7 @@ Responde en JSON con:
 
     const hasAdminEnv = Boolean(process.env.FIREBASE_SERVICE_ACCOUNT || process.env.GOOGLE_APPLICATION_CREDENTIALS);
 
-    let adminProjectId = null;
+    let adminProjectId: string | null = null;
     const saEnv = process.env.FIREBASE_SERVICE_ACCOUNT?.trim();
     if (saEnv) {
       try {
@@ -472,16 +436,17 @@ Responde en JSON con:
     return res.json({
       firebaseClientConfigured: clientConfigured,
       firebaseAdminConfigured: hasAdminEnv,
-      firebaseAdminInitialized: firebaseAdminApp !== null,
+      firebaseAdminInitialized: fbAdmin !== null,
       mercadoPagoConfigured: mpEnv.isValid,
       clientProjectIdExpected: clientProjectId,
       adminProjectIdActual: adminProjectId,
       projectsMatch: adminProjectId === clientProjectId,
-      firestoreDatabaseIdBackend: firestoreDatabaseIdBackend
+      firestoreDatabaseIdBackend
     });
   });
 
-  app.post('/api/auth/verify-token', async (req: Request, res: Response) => {
+  // Diagnostic Token Verification Endpoint
+  app.post('/api/auth/verify-token', rateLimiter, async (req: Request, res: Response) => {
     try {
       const { token } = req.body || {};
       if (!token || typeof token !== 'string') {
@@ -499,24 +464,127 @@ Responde en JSON con:
           success: true,
           uid: decodedToken.uid,
           email: decodedToken.email || null,
-          role: decodedToken.role || null,
-          projectId: adminApp.options.projectId || '(not specified in options)'
+          role: decodedToken.role || null
         });
-      } catch (verifyErr: any) {
-        console.error('[DIAGNOSTIC VERIFY TOKEN ERROR]', verifyErr?.message || verifyErr);
+      } catch {
         return res.status(400).json({
           success: false,
           error: 'TOKEN_VERIFICATION_FAILED',
-          message: verifyErr?.message || 'La verificación del token de Firebase falló.',
-          code: verifyErr?.code || null
+          message: 'La verificación del token de Firebase falló.'
         });
       }
-    } catch (err: any) {
-      return res.status(500).json({ error: 'INTERNAL_ERROR', message: err?.message });
+    } catch {
+      return res.status(500).json({ error: 'INTERNAL_ERROR', message: 'Error al procesar la verificación del token.' });
     }
   });
 
-  app.get('/api/mercadopago/oauth/start', async (req: Request, res: Response) => {
+  // ==========================================
+  // 2. GEMINI AI ENDPOINTS (PII Sanitized & Rate Limited)
+  // ==========================================
+
+  // AI Natural Language Search & Request Interpreter
+  app.post("/api/gemini/parse-request", rateLimiter, async (req: Request, res: Response) => {
+    try {
+      const auth = await verifyAuthToken(req);
+      if (!auth.isAuthenticated) {
+        return res.status(401).json({ error: "Se requiere autenticación para utilizar la IA de CONEXA.", code: "UNAUTHORIZED" });
+      }
+
+      const { userPrompt } = req.body;
+      if (!userPrompt || typeof userPrompt !== "string") {
+        return res.status(400).json({ error: "Parámetro userPrompt inválido." });
+      }
+
+      // Sanitize PII before sending to AI
+      const sanitizedPrompt = sanitizePIIForAI(userPrompt.trim().slice(0, 500));
+
+      const ai = getGeminiClient();
+      if (!ai) {
+        // Fallback rule-based parsing: NEVER invent fake prices, budgets or commercial data
+        const isUrgent = userPrompt.toLowerCase().includes("urgente");
+        return res.json({
+          category: "General",
+          professionName: "Profesional de Servicio",
+          title: sanitizedPrompt.slice(0, 60) || "Solicitud de servicio",
+          description: sanitizedPrompt,
+          urgency: isUrgent ? "URGENTE" : "NORMAL",
+          estimatedBudgetArs: 0, // 0 = No presupuestado / A convenir con el profesional
+          suggestedKeywords: []
+        });
+      }
+
+      const response = await ai.models.generateContent({
+        model: "gemini-3.6-flash",
+        contents: `Analizá la siguiente solicitud de un usuario en Argentina para contratar un servicio profesional o solucionar un problema: "${sanitizedPrompt}". 
+Responde ÚNICAMENTE en formato JSON estructurado con estas claves:
+- category: categoría de servicio sugerida (ej. "Hogar & Construcción", "Profesionales & Graduados", "Tecnología & Digital", "Salud & Estética", "Mecánica & Vehículos", "Servicios & Eventos")
+- professionName: nombre de la profesión específica (ej. "Plomero / Fontanero", "Electricista Matriculado", "Gasista Matriculado", "Abogado", "Técnico de Computación")
+- title: título resumido y profesional de la solicitud
+- description: descripción pulida en español para publicar
+- urgency: "NORMAL", "ALTA" o "URGENTE"
+- estimatedBudgetArs: entero estimado sugerido en pesos argentinos ARS (o 0 si incierto o a convenir)
+- suggestedKeywords: arreglo de palabras clave para filtrar`,
+        config: {
+          responseMimeType: "application/json",
+          systemInstruction: "Sos el asistente inteligente oficial de la app CONEXA en Argentina. Convertís solicitudes en lenguaje natural en especificaciones de servicio limpias y estructuradas. NUNCA inventes presupuestos falsos ni incluyas datos personales."
+        }
+      });
+
+      const parsed = JSON.parse(response.text || "{}");
+      return res.json(parsed);
+    } catch {
+      console.error("Error al procesar solicitud con IA");
+      return res.status(500).json({ error: "Error interno al procesar la solicitud con IA. Intente nuevamente." });
+    }
+  });
+
+  // AI Moderation & Fraud Check Endpoint
+  app.post("/api/gemini/moderate", rateLimiter, async (req: Request, res: Response) => {
+    try {
+      const auth = await verifyAuthToken(req);
+      if (!auth.isAuthenticated) {
+        return res.status(401).json({ error: "Se requiere autenticación para utilizar la moderación de CONEXA.", code: "UNAUTHORIZED" });
+      }
+
+      const { text, contextType } = req.body;
+      if (!text || typeof text !== "string") {
+        return res.json({ isSafe: true, flags: [], riskScore: 0, analysis: "Sin texto provisto." });
+      }
+
+      const sanitizedText = sanitizePIIForAI(text.trim().slice(0, 1000));
+      const ai = getGeminiClient();
+
+      if (!ai) {
+        return res.json({ isSafe: true, flags: [], riskScore: 0, analysis: "Verificación estándar superada." });
+      }
+
+      const response = await ai.models.generateContent({
+        model: "gemini-3.6-flash",
+        contents: `Analizá el siguiente texto de ${contextType || 'plataforma'} en busca de fraude, cobros por fuera sospechosos, acoso, spam o reseñas falsas: "${sanitizedText}".
+Responde en JSON con:
+- isSafe: boolean
+- flags: arreglo de etiquetas detectadas (ej. ["OFF_PLATFORM_PAYMENT_WARNING", "SPAM", "HARASSMENT", "FAKE_REVIEW_SUSPECTED"])
+- riskScore: número entre 0 y 100
+- analysis: explicación breve de 1 oración en español
+- warningMessageToUser: mensaje preventivo para el usuario si riskScore > 40`,
+        config: {
+          responseMimeType: "application/json"
+        }
+      });
+
+      const parsed = JSON.parse(response.text || "{}");
+      return res.json(parsed);
+    } catch {
+      console.error("Error en moderación con IA");
+      return res.json({ isSafe: true, flags: [], riskScore: 0, analysis: "Verificación estándar de seguridad superada." });
+    }
+  });
+
+  // ==========================================
+  // 3. MERCADO PAGO MARKETPLACE ENDPOINTS
+  // ==========================================
+
+  app.get('/api/mercadopago/oauth/start', rateLimiter, async (req: Request, res: Response) => {
     try {
       const auth = await verifyAuthToken(req);
       if (!auth.isAuthenticated || !auth.userId) {
@@ -536,11 +604,11 @@ Responde en JSON con:
       url.searchParams.set('state', state);
       return res.json({ authorizationUrl: url.toString(), redirectUri });
     } catch (err: any) {
-      return res.status(503).json({ error: 'MERCADO_PAGO_NOT_CONFIGURED', detail: err?.message || 'Configuration error' });
+      return res.status(503).json({ error: 'MERCADO_PAGO_NOT_CONFIGURED', code: 'CONFIG_ERROR' });
     }
   });
 
-  app.get('/api/mercadopago/oauth/callback', async (req: Request, res: Response) => {
+  app.get('/api/mercadopago/oauth/callback', rateLimiter, async (req: Request, res: Response) => {
     try {
       const code = String(req.query.code || '');
       const state = String(req.query.state || '');
@@ -558,8 +626,7 @@ Responde en JSON con:
       });
 
       if (!tokenResponse.ok) {
-        const body = await tokenResponse.text();
-        console.error('[MP OAuth] token exchange failed', tokenResponse.status, body.slice(0, 500));
+        console.error('[MP OAuth] Token exchange failed with status', tokenResponse.status);
         return res.status(502).send('No se pudo completar la vinculación con Mercado Pago.');
       }
 
@@ -581,16 +648,16 @@ Responde en JSON con:
 
       const appUrl = (process.env.APP_URL || '').replace(/\/$/, '');
       return res.redirect(`${appUrl}/?mercadopago=connected`);
-    } catch (err: any) {
-      console.error('[MP OAuth] callback error', err?.message || err);
+    } catch {
+      console.error('[MP OAuth] Callback internal error');
       return res.status(500).send('Error interno al vincular Mercado Pago.');
     }
   });
 
-  app.get('/api/mercadopago/status', async (req: Request, res: Response) => {
+  app.get('/api/mercadopago/status', rateLimiter, async (req: Request, res: Response) => {
     try {
       const auth = await verifyAuthToken(req);
-      if (!auth.isAuthenticated) {
+      if (!auth.isAuthenticated || !auth.userId) {
         let errorCode = 'UNAUTHORIZED';
         let httpStatus = 401;
         if (auth.errorReason === 'MISSING_BEARER_TOKEN' || auth.errorReason === 'EMPTY_TOKEN') {
@@ -604,29 +671,24 @@ Responde en JSON con:
         return res.status(httpStatus).json({ error: errorCode, reason: auth.errorReason });
       }
 
-      if (!auth.userId) {
-        return res.status(401).json({ error: 'UNAUTHENTICATED_CLIENT', reason: 'NO_USER_ID' });
-      }
-
       let db;
       try {
         db = await getAdminDb();
-      } catch (dbErr: any) {
-        return res.status(503).json({ error: 'FIREBASE_ADMIN_NOT_CONFIGURED', detail: dbErr?.message });
+      } catch {
+        return res.status(503).json({ error: 'FIREBASE_ADMIN_NOT_CONFIGURED' });
       }
 
       try {
         const snap = await db.collection('mercadopago_connections').doc(auth.userId).get();
         if (!snap.exists) return res.json({ connected: false });
         const data = snap.data() || {};
+        // NEVER return encrypted tokens, access tokens, or private keys to the client
         return res.json({ connected: data.connected === true, mpUserId: data.mpUserId || null, publicKey: data.publicKey || null, updatedAt: data.updatedAt || null });
-      } catch (dbErr: any) {
-        console.error('[MERCADO PAGO STATUS] Error querying Firestore:', dbErr);
-        return res.status(503).json({ error: 'FIREBASE_FIRESTORE_ERROR', detail: dbErr?.message });
+      } catch {
+        return res.status(503).json({ error: 'FIREBASE_FIRESTORE_ERROR' });
       }
-    } catch (err: any) {
-      console.error('[MERCADO PAGO STATUS] Top-level error:', err);
-      return res.status(503).json({ error: 'MERCADO_PAGO_NOT_CONFIGURED', detail: err?.message });
+    } catch {
+      return res.status(503).json({ error: 'MERCADO_PAGO_NOT_CONFIGURED' });
     }
   });
 
@@ -638,13 +700,13 @@ Responde en JSON con:
       const db = await getAdminDb();
       await db.collection('mercadopago_connections').doc(auth.userId).set({ connected: false, accessTokenEnc: null, refreshTokenEnc: null, disconnectedAt: new Date().toISOString(), updatedAt: new Date().toISOString() }, { merge: true });
       return res.json({ success: true });
-    } catch (err: any) {
+    } catch {
       return res.status(500).json({ error: 'MERCADO_PAGO_DISCONNECT_FAILED' });
     }
   });
 
   // Creates a Checkout Pro preference for a transaction using the professional's OAuth token.
-  // The client never receives the seller access token.
+  // The client NEVER receives the seller access token.
   app.post('/api/mercadopago/checkout/create', rateLimiter, async (req: Request, res: Response) => {
     try {
       const auth = await verifyAuthToken(req);
@@ -684,25 +746,22 @@ Responde en JSON con:
         })
       });
 
-      const bodyText = await preferenceResponse.text();
       if (!preferenceResponse.ok) {
-        console.error('[MP Checkout] preference failed', preferenceResponse.status, bodyText.slice(0, 1000));
+        console.error('[MP Checkout] Preference creation failed with status', preferenceResponse.status);
         return res.status(502).json({ error: 'MERCADO_PAGO_PREFERENCE_FAILED' });
       }
 
-      const preference = JSON.parse(bodyText);
+      const preference = await preferenceResponse.json();
       await txRef.update({ mercadoPagoPreferenceId: preference.id, status: 'PAYMENT_PENDING', paymentCheckoutCreatedAt: new Date().toISOString() });
 
       return res.json({ success: true, transactionId: transaction.id, preferenceId: preference.id, initPoint: preference.init_point, sandboxInitPoint: preference.sandbox_init_point || null });
-    } catch (err: any) {
-      console.error('[MP Checkout] error', err?.message || err);
+    } catch {
       return res.status(500).json({ error: 'MERCADO_PAGO_CHECKOUT_FAILED' });
     }
   });
 
+  // Authoritative Mercado Pago Webhook Ingestion with S2S Verification
   app.post('/api/mercadopago/webhook', async (req: Request, res: Response) => {
-    // Mercado Pago notifications are acknowledged quickly. The authoritative payment status
-    // is fetched server-to-server below; browser redirects are never treated as proof of payment.
     try {
       const raw = Buffer.isBuffer((req as any).rawBody) ? (req as any).rawBody : Buffer.from(JSON.stringify(req.body || {}));
       const signature = String(req.headers['x-signature'] || '');
@@ -710,12 +769,13 @@ Responde en JSON con:
       const webhookSecret = process.env.MP_WEBHOOK_SECRET;
 
       if (webhookSecret && signature && requestId) {
-        // Signature format is parsed defensively; if configured, a missing/invalid signature is rejected.
         const parts = Object.fromEntries(signature.split(',').map((part: string) => { const [k, v] = part.trim().split('=', 2); return [k, v]; }));
         const dataId = (() => { try { const parsed = JSON.parse(raw.toString('utf8')); return String(parsed?.data?.id || parsed?.id || ''); } catch { return ''; } })();
         const manifest = `id:${dataId};request-id:${requestId};ts:${parts.ts || ''};`;
         const expected = crypto.createHmac('sha256', webhookSecret).update(manifest).digest('hex');
-        if (!parts.v1 || parts.v1.length !== expected.length || !crypto.timingSafeEqual(Buffer.from(parts.v1), Buffer.from(expected))) return res.status(401).send('invalid signature');
+        if (!parts.v1 || !safeTimingCompare(parts.v1, expected)) {
+          return res.status(401).send('invalid signature');
+        }
       }
 
       let event: any = {};
@@ -723,7 +783,6 @@ Responde en JSON con:
       const paymentId = String(event?.data?.id || event?.id || '');
       if (!paymentId) return res.status(200).send('ok');
 
-      // Look up transaction by paymentId or fetch S2S from Mercado Pago using external_reference
       const db = await getAdminDb();
       let txDocRef: any = null;
       let transactionData: any = null;
@@ -734,7 +793,6 @@ Responde en JSON con:
         transactionData = querySnap.docs[0].data();
       }
 
-      // Fetch payment details directly from Mercado Pago S2S using platform or seller access token
       let payment: any = null;
       if (transactionData) {
         const connectionSnap = await db.collection('mercadopago_connections').doc(transactionData.professionalId).get();
@@ -746,11 +804,9 @@ Responde en JSON con:
       }
 
       if (!payment) {
-        console.warn(`[MP Webhook] Could not retrieve payment details. Professional connection or payment information unavailable for paymentId=${paymentId}`);
         return res.status(200).send('ok');
       }
 
-      // If transaction not found by paymentId, locate by payment.external_reference (transactionId)
       if (!txDocRef && payment.external_reference) {
         const docRef = db.collection('transactions').doc(String(payment.external_reference));
         const docSnap = await docRef.get();
@@ -762,14 +818,13 @@ Responde en JSON con:
 
       if (!txDocRef || !transactionData) return res.status(200).send('ok');
 
-      // Verify payment details against transaction record
       if (payment.external_reference && String(payment.external_reference) !== String(transactionData.id)) {
-        console.warn('[MP Webhook] Mismatched external_reference', payment.external_reference, transactionData.id);
+        console.warn('[MP Webhook] Mismatched external_reference');
         return res.status(200).send('ok');
       }
 
       if (payment.transaction_amount && Number(payment.transaction_amount) < Number(transactionData.amountArs)) {
-        console.warn('[MP Webhook] Paid amount lower than required transaction amount', payment.transaction_amount, transactionData.amountArs);
+        console.warn('[MP Webhook] Paid amount lower than required transaction amount');
         return res.status(200).send('ok');
       }
 
@@ -781,17 +836,17 @@ Responde en JSON con:
 
       await txDocRef.update(update);
       return res.status(200).send('ok');
-    } catch (err) {
-      console.error('[MP Webhook] error', err);
+    } catch {
       return res.status(200).send('ok');
     }
   });
 
   // ==========================================
-  // CONEXA TRANSACTIONS - Commercial Core
+  // 4. COMMERCIAL TRANSACTIONS & USER ENDPOINTS
   // ==========================================
+
   // Creates the authoritative transaction when a client accepts a quote.
-  // The financial values are calculated server-side; the browser cannot set the fee.
+  // Financial values and commissions are strictly calculated server-side.
   app.post("/api/transactions/create", rateLimiter, async (req: Request, res: Response) => {
     try {
       const auth = await verifyAuthToken(req);
@@ -890,16 +945,15 @@ Responde en JSON con:
   app.post("/api/user/delete-account", rateLimiter, async (req: Request, res: Response) => {
     try {
       const { userId } = req.body;
-      if (!userId) {
+      if (!userId || typeof userId !== 'string') {
         return res.status(400).json({ error: "Falta ID de usuario para dar de baja." });
       }
 
-      // Check if Firebase Admin SDK is available
       const hasFirebaseAdminConfig = Boolean(process.env.FIREBASE_SERVICE_ACCOUNT || process.env.GOOGLE_APPLICATION_CREDENTIALS);
       if (!hasFirebaseAdminConfig) {
         return res.status(503).json({
           success: false,
-          error: "El servicio de Firebase Admin SDK no está configurado en el servidor para realizar eliminaciones reales de cuenta.",
+          error: "El servicio de Firebase Admin SDK no está configurado en el servidor para realizar eliminaciones de cuenta.",
           code: "FIREBASE_ADMIN_NOT_CONFIGURED"
         });
       }
@@ -913,7 +967,7 @@ Responde en JSON con:
         });
       }
 
-      // Ensure user can only request deletion of their own account unless admin
+      // Ensure user can only request deletion of their own account unless authorized ADMIN/SUPER_ADMIN
       const canDelete = (auth.userId === userId) || (auth.isAdmin === true);
       if (!canDelete) {
         return res.status(403).json({
@@ -934,35 +988,32 @@ Responde en JSON con:
       const db = await getAdminDb();
 
       try {
-        // Delete user from Firebase Auth
+        // 1. Delete user from Firebase Auth
         await admin.auth().deleteUser(userId);
-        console.log(`[CONEXA AUTH] Usuario borrado de Firebase Auth: ${userId}`);
 
-        // Delete user's profile from Firestore
+        // 2. Delete user's public profile from Firestore
         await db.collection('users').doc(userId).delete();
-        console.log(`[CONEXA FIRESTORE] Perfil borrado de Firestore: ${userId}`);
 
-        // Also delete subcollection /users/{userId}/private/info if exists
+        // 3. Delete user's private info subdoc
         try {
           await db.collection('users').doc(userId).collection('private').doc('info').delete();
-        } catch (e) {
-          console.log("[CONEXA FIRESTORE] No private/info subdoc to delete or already deleted.");
+        } catch {}
+
+        // 4. Mask messages sent by user to avoid digital footprint
+        const messagesSnapshot = await db.collection('messages').where('senderId', '==', userId).get();
+        if (!messagesSnapshot.empty) {
+          const batch = db.batch();
+          messagesSnapshot.forEach((doc: any) => {
+            batch.update(doc.ref, {
+              text: "[MENSAJE ELIMINADO - USUARIO DADO DE BAJA]",
+              content: "[MENSAJE ELIMINADO - USUARIO DADO DE BAJA]",
+              isDeleted: true
+            });
+          });
+          await batch.commit();
         }
 
-        // Mask or delete user's messages in Firestore to avoid digital footprint (Requirement 13)
-        const messagesSnapshot = await db.collection('messages').where('senderId', '==', userId).get();
-        const batch = db.batch();
-        messagesSnapshot.forEach((doc: any) => {
-          batch.update(doc.ref, {
-            text: "[MENSAJE ELIMINADO - USUARIO DADO DE BAJA]",
-            content: "[MENSAJE ELIMINADO - USUARIO DADO DE BAJA]",
-            isDeleted: true
-          });
-        });
-        await batch.commit();
-        console.log(`[CONEXA FIRESTORE] Mensajes del usuario dados de baja para: ${userId}`);
-
-        // Log the admin/user action to admin_audit_logs (Requirement 15)
+        // 5. Secure Audit Log entry
         const auditLogId = `AUD-${Date.now()}-${Math.floor(Math.random() * 1000)}`;
         await db.collection('admin_audit_logs').doc(auditLogId).set({
           adminUid: auth.userId || 'system',
@@ -983,20 +1034,20 @@ Responde en JSON con:
           timestamp: new Date().toISOString()
         });
       } catch (authErr: any) {
-        console.error(`Error al borrar físicamente al usuario ${userId}:`, authErr);
+        console.error(`[AUTH] Error al borrar usuario ${userId}`);
         return res.status(500).json({
           success: false,
-          error: `Error interno de Firebase Admin al borrar la cuenta: ${authErr.message || authErr}`,
+          error: "Error interno al ejecutar la baja en el servicio de autenticación.",
           code: "FIREBASE_DELETE_ERROR"
         });
       }
-    } catch (err) {
+    } catch {
       return res.status(500).json({ error: "Error al procesar la eliminación de la cuenta." });
     }
   });
 
   // ==========================================
-  // CONEXA RADAR API ENDPOINTS (n8n & Internal)
+  // 5. CONEXA RADAR API ENDPOINTS
   // ==========================================
 
   // Anti-Spam Duplicate Opportunity Memory Cache
@@ -1015,10 +1066,10 @@ Responde en JSON con:
       const textToAnalyze = (description || rawText || "").trim();
 
       if (!textToAnalyze) {
-        return res.status(400).json({ error: "No se provino texto o descripción para analizar." });
+        return res.status(400).json({ error: "No se proveyó texto o descripción para analizar." });
       }
 
-      // Requirement 8: Separate PUBLIC USER REQUEST ANALYSIS from ADMIN RADAR ANALYSIS
+      // Context separation: USER_REQUEST vs ADMIN RADAR ANALYSIS
       const isUserRequest = contextType === 'USER_REQUEST';
       if (!isUserRequest) {
         const auth = await verifyAuthToken(req);
@@ -1035,19 +1086,19 @@ Responde en JSON con:
       const ai = getGeminiClient();
 
       if (!ai) {
-        // Fallback rule-based parsing if Gemini key is absent
+        // Fallback rule-based parsing if Gemini key is absent (no fake prices or assumptions)
         const isUrgent = textToAnalyze.toLowerCase().includes("urgente") || textToAnalyze.toLowerCase().includes("hoy");
         return res.json({
-          category: "Electricidad",
-          subcategory: "Reparación General",
+          category: "General",
+          subcategory: "Servicio General",
           intent: isUrgent ? "HIGH" : "MEDIUM",
           urgency: isUrgent ? "HIGH" : "NORMAL",
-          intentScore: isUrgent ? 92 : 75,
-          confidenceScore: 90,
+          intentScore: isUrgent ? 85 : 70,
+          confidenceScore: 80,
           city: city || "Santiago del Estero",
           province: province || "Santiago del Estero",
-          reasoning: "Análisis preliminar por regla heurística de demanda.",
-          recommendedResponseText: "Hola 👋 Si aún buscás un profesional verificado en tu zona, podés consultar sin compromiso en CONEXA."
+          reasoning: "Análisis preliminar por regla heurística de demanda sin IA activa.",
+          recommendedResponseText: "Hola 👋 Podés consultar profesionales disponibles en tu zona registrándote en CONEXA."
         });
       }
 
@@ -1058,7 +1109,7 @@ Ubicación sugerida: ${city || "No especificada"}, ${province || "Argentina"}.
 
 Clasificá la oportunidad y responde ÚNICAMENTE en formato JSON con la siguiente estructura:
 - category: una de ["Electricidad", "Plomería", "Gas", "Refrigeración", "Mecánica", "Limpieza", "Construcción", "Pintura", "Informática", "Cerrajería", "Jardinería", "Otros"]
-- subcategory: nombre corto de la subcategoría específica (ej. "Reparación de Tablero", "Instalación de Calefactor")
+- subcategory: nombre corto de la subcategoría específica
 - intent: "LOW", "MEDIUM" o "HIGH" (nivel de intención real de contratar)
 - urgency: "LOW", "MEDIUM", "HIGH" o "EMERGENCY"
 - intentScore: entero entre 0 y 100
@@ -1081,19 +1132,15 @@ Clasificá la oportunidad y responde ÚNICAMENTE en formato JSON con la siguient
         intentScore: parsed.intentScore ?? 80,
         confidenceScore: parsed.confidenceScore ?? 88,
         spamRiskScore: parsed.spamRiskScore ?? 3,
-        reasoning: parsed.reasoning || "Análisis completado satisfactoriamente por el motor de IA de CONEXA.",
+        reasoning: parsed.reasoning || "Análisis completado por el motor de IA de CONEXA.",
         recommendedResponseText: parsed.recommendedResponseText || "Hola 👋 Podés ver profesionales verificados en tu zona registrándote gratis en CONEXA.",
         analyzedAt: new Date().toISOString()
       });
-    } catch (err: any) {
+    } catch {
       console.error("Error en /api/radar/analyze");
       return res.status(500).json({ error: "Error interno al analizar oportunidad con IA." });
     }
   });
-
-  // ==========================================
-  // CONEXA RADAR MATCHING ENGINE (REAL + SIMULATION)
-  // ==========================================
 
   // Professional profiles dataset for simulation / fallbacks
   const MASTER_PROFESSIONAL_PROFILES = [
@@ -1109,7 +1156,6 @@ Clasificá la oportunidad y responde ÚNICAMENTE en formato JSON con la siguient
       city: 'Santiago del Estero',
       province: 'Santiago del Estero',
       approxZone: 'Santiago del Estero - Barrio Parque',
-      phonePrivate: '+54 385 499-8811',
       avatar: 'https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?auto=format&fit=crop&q=80&w=250',
       isIdentityVerified: true,
       isProfessionalVerified: true,
@@ -1135,7 +1181,6 @@ Clasificá la oportunidad y responde ÚNICAMENTE en formato JSON con la siguient
       city: 'Santiago del Estero',
       province: 'Santiago del Estero',
       approxZone: 'La Banda - Centro',
-      phonePrivate: '+54 385 588-3322',
       avatar: 'https://images.unsplash.com/photo-1500648767791-00dcc994a43e?auto=format&fit=crop&q=80&w=250',
       isIdentityVerified: true,
       isProfessionalVerified: true,
@@ -1161,7 +1206,6 @@ Clasificá la oportunidad y responde ÚNICAMENTE en formato JSON con la siguient
       city: 'Santiago del Estero',
       province: 'Santiago del Estero',
       approxZone: 'Santiago del Estero - Centro Tribunales',
-      phonePrivate: '+54 385 411-9900',
       avatar: 'https://images.unsplash.com/photo-1573496359142-b8d87734a5a2?auto=format&fit=crop&q=80&w=250',
       isIdentityVerified: true,
       isProfessionalVerified: true,
@@ -1187,7 +1231,6 @@ Clasificá la oportunidad y responde ÚNICAMENTE en formato JSON con la siguient
       city: 'Córdoba',
       province: 'Córdoba',
       approxZone: 'Córdoba Capital - Nueva Córdoba',
-      phonePrivate: '+54 351 688-4411',
       avatar: 'https://images.unsplash.com/photo-1539571696357-5a69c17a67c6?auto=format&fit=crop&q=80&w=250',
       isIdentityVerified: true,
       isProfessionalVerified: true,
@@ -1213,7 +1256,6 @@ Clasificá la oportunidad y responde ÚNICAMENTE en formato JSON con la siguient
       city: 'Buenos Aires',
       province: 'CABA',
       approxZone: 'Buenos Aires - Caballito',
-      phonePrivate: '+54 11 4400-9922',
       avatar: 'https://images.unsplash.com/photo-1522075469751-3a6694fb2f61?auto=format&fit=crop&q=80&w=250',
       isIdentityVerified: true,
       isProfessionalVerified: true,
@@ -1239,7 +1281,6 @@ Clasificá la oportunidad y responde ÚNICAMENTE en formato JSON con la siguient
       city: 'Santiago del Estero',
       province: 'Santiago del Estero',
       approxZone: 'Santiago del Estero - Centro / Autonomía',
-      phonePrivate: '+54 385 422-7711',
       avatar: 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?auto=format&fit=crop&q=80&w=250',
       isIdentityVerified: true,
       isProfessionalVerified: true,
@@ -1252,36 +1293,10 @@ Clasificá la oportunidad y responde ÚNICAMENTE en formato JSON con la siguient
       workZoneRadiusKm: 30,
       isBlocked: false,
       isProfessional: true
-    },
-    {
-      id: 'pro-7-inactive',
-      name: 'Mariano Inactivo',
-      businessName: 'Servicios Inactivos',
-      professionName: 'Electricista General',
-      category: 'Electricidad',
-      categoryId: 'cat-hogar',
-      specialties: ['Instalaciones'],
-      description: 'Perfil suspendido por falta de verificación de documentos.',
-      city: 'Santiago del Estero',
-      province: 'Santiago del Estero',
-      approxZone: 'Santiago del Estero - Oeste',
-      phonePrivate: '+54 385 000-0000',
-      avatar: 'https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?auto=format&fit=crop&q=80&w=250',
-      isIdentityVerified: false,
-      isProfessionalVerified: false,
-      rating: 3.2,
-      reviewCount: 2,
-      jobsCompleted: 1,
-      trustScore: 40,
-      availabilityStatus: 'OCUPADO',
-      responseRate: 40,
-      workZoneRadiusKm: 5,
-      isBlocked: true, // SUSPENDED / INACTIVE
-      isProfessional: true
     }
   ];
 
-  // Helper matching scoring function according to CONEXA RADAR formula
+  // Scoring function according to CONEXA RADAR formula
   function scoreProfessionalCandidate(
     pro: typeof MASTER_PROFESSIONAL_PROFILES[0],
     reqCategory?: string,
@@ -1293,13 +1308,11 @@ Clasificá la oportunidad y responde ÚNICAMENTE en formato JSON con la siguient
     const reasons: string[] = [];
     let discardReason: string | null = null;
 
-    // Discard rule 1: Active check
     if (pro.isBlocked || !pro.isProfessional) {
       discardReason = "Profesional suspendido / inactivo en plataforma CONEXA.";
       return { score: 0, isDiscarded: true, discardReason, breakdown: {}, reasons: [] };
     }
 
-    // Discard rule 2: Strict verification policy if enabled
     if (onlyVerified && (!pro.isIdentityVerified || !pro.isProfessionalVerified)) {
       discardReason = "Falta verificación obligatoria de identidad/matrícula.";
       return { score: 0, isDiscarded: true, discardReason, breakdown: {}, reasons: [] };
@@ -1437,9 +1450,7 @@ Clasificá la oportunidad y responde ÚNICAMENTE en formato JSON con la siguient
         if (!auth.isAuthenticated) {
           return res.status(401).json({
             success: false,
-            error: auth.errorReason === "FIREBASE_ADMIN_SDK_NOT_CONFIGURED"
-              ? "Imposible verificar token en backend. Se requiere configurar credencial de Firebase Admin SDK en el servidor para realizar búsquedas de producción."
-              : "Acceso denegado. Se requiere un Firebase ID Token válido en el encabezado Authorization.",
+            error: "Acceso denegado. Se requiere un Firebase ID Token válido en el encabezado Authorization.",
             code: "UNAUTHORIZED"
           });
         }
@@ -1451,7 +1462,6 @@ Clasificá la oportunidad y responde ÚNICAMENTE en formato JSON con la siguient
           });
         }
 
-        // Fetch real professional users from Firestore
         const hasFirebaseAdminConfig = Boolean(process.env.FIREBASE_SERVICE_ACCOUNT || process.env.GOOGLE_APPLICATION_CREDENTIALS);
         if (!hasFirebaseAdminConfig) {
           return res.status(503).json({
@@ -1476,11 +1486,10 @@ Clasificá la oportunidad y responde ÚNICAMENTE en formato JSON con la siguient
           }
           candidateList = candidates;
           dataSource = "FIRESTORE_PRODUCTION";
-        } catch (dbErr: any) {
-          console.error("[RADAR MATCH] Error consultando Firestore candidates:", dbErr.message || dbErr);
+        } catch {
           return res.status(503).json({
             success: false,
-            error: `Servicio de Firestore no disponible o error de consulta: ${dbErr.message || dbErr}`,
+            error: "Servicio de Firestore no disponible para consulta de candidatos.",
             code: "FIRESTORE_PRODUCTION_UNAVAILABLE"
           });
         }
@@ -1533,10 +1542,8 @@ Clasificá la oportunidad y responde ÚNICAMENTE en formato JSON con la siguient
         }
       });
 
-      // Sort by matchScore descending
       rankedProfessionals.sort((a, b) => b.matchScore - a.matchScore);
 
-      // Add rank (TOP 1, TOP 2, TOP 3)
       const topRanked = rankedProfessionals.slice(0, limit || 3).map((pro, index) => ({
         ...pro,
         rank: index + 1,
@@ -1555,8 +1562,7 @@ Clasificá la oportunidad y responde ÚNICAMENTE en formato JSON con la siguient
         discardedCount: discardedProfessionals.length,
         discardedProfessionals
       });
-    } catch (err: any) {
-      console.error("Error en /api/radar/match");
+    } catch {
       return res.status(500).json({ error: "Error interno al ejecutar CONEXA MATCH." });
     }
   });
@@ -1572,20 +1578,20 @@ Clasificá la oportunidad y responde ÚNICAMENTE en formato JSON con la siguient
 
       const isTestEnv = Boolean(is_test || source === "radar_test" || environment === "simulation");
 
-      // In production, require webhook secret authentication
+      // In production, require strict webhook secret authentication with timing-safe comparison
       if (!isTestEnv) {
-        const incomingSecret = req.headers['x-radar-secret'] || req.headers['x-n8n-secret'];
+        const incomingSecret = (req.headers['x-radar-secret'] || req.headers['x-n8n-secret']) as string;
         const expectedSecret = process.env.RADAR_WEBHOOK_SECRET || process.env.N8N_WEBHOOK_SECRET;
         
         if (!expectedSecret) {
           return res.status(500).json({
             success: false,
-            error: "Acceso denegado. Secreto RADAR_WEBHOOK_SECRET / N8N_WEBHOOK_SECRET no configurado en el servidor para recibir eventos en producción.",
+            error: "Acceso denegado. Secreto de webhook no configurado en el servidor para producción.",
             code: "WEBHOOK_SECRET_NOT_CONFIGURED"
           });
         }
 
-        if (incomingSecret !== expectedSecret) {
+        if (!safeTimingCompare(incomingSecret, expectedSecret)) {
           return res.status(401).json({
             success: false,
             error: "Acceso denegado. Se requiere encabezado x-radar-secret o x-n8n-secret válido para registrar oportunidades en producción.",
@@ -1594,7 +1600,7 @@ Clasificá la oportunidad y responde ÚNICAMENTE en formato JSON con la siguient
         }
       }
 
-      // Anti-Spam Check (only in production or non-test to allow repeated test runs if needed)
+      // Anti-Spam Check
       const hash = generateOpportunityHash(description, city || "Santiago del Estero");
       if (!isTestEnv && processedOpportunityHashes.has(hash)) {
         return res.status(409).json({
@@ -1608,17 +1614,16 @@ Clasificá la oportunidad y responde ÚNICAMENTE en formato JSON con la siguient
 
       const sanitizedDesc = sanitizePIIForAI(description.slice(0, 1000));
 
-      // Trigger AI Analysis
       const ai = getGeminiClient();
       let aiResult = {
-        category: "Electricidad",
-        subcategory: "Reparación General",
+        category: "General",
+        subcategory: "Consulta de Servicio",
         intent: "HIGH" as const,
         urgency: "HIGH" as const,
-        intentScore: 88,
-        confidenceScore: 95,
+        intentScore: 85,
+        confidenceScore: 90,
         spamRiskScore: 2,
-        reasoning: isTestEnv ? "Oportunidad de prueba generada en CONEXA RADAR Test Lab." : "Oportunidad procesada por webhook n8n con intención de contratación.",
+        reasoning: isTestEnv ? "Oportunidad de prueba generada en CONEXA RADAR Test Lab." : "Oportunidad procesada por webhook con intención de contratación.",
         recommendedResponseText: "Hola 👋 En CONEXA podés ver profesionales verificados de tu zona con resguardo de datos."
       };
 
@@ -1641,8 +1646,8 @@ Responde en JSON:
           });
           const parsed = JSON.parse(aiRes.text || "{}");
           if (parsed.category) aiResult = parsed;
-        } catch (e) {
-          console.warn("Error en fallback AI para opportunity endpoint");
+        } catch {
+          console.warn("Fallback AI para opportunity endpoint");
         }
       }
 
@@ -1708,7 +1713,7 @@ Responde en JSON:
             locationApprox: `${city || 'Santiago del Estero'} - Centro`,
             phoneProtected: "[TELÉFONO PROTEGIDO POR CONEXA]",
             isVerified: true,
-            matchReasons: ["Profesional líder en zona", "Verificado officially en CONEXA"]
+            matchReasons: ["Profesional líder en zona", "Verificado en CONEXA"]
           }
         ],
         conversionStatus: "NOT_STARTED",
@@ -1728,13 +1733,12 @@ Responde en JSON:
         opportunity: newOpportunity,
         n8nNextStep: aiResult.intentScore >= 80 ? "NOTIFY_OPERATOR_HIGH_INTENT" : "QUEUE_FOR_OPERATOR_REVIEW"
       });
-    } catch (err: any) {
-      console.error("Error al registrar oportunidad en /api/radar/opportunity");
+    } catch {
       return res.status(500).json({ error: "Error interno al procesar la oportunidad." });
     }
   });
 
-  // 4. Contact Orchestration Endpoint
+  // 4. Contact Orchestration Endpoint (Requires ADMIN / SUPER_ADMIN)
   app.post("/api/radar/contact", rateLimiter, async (req: Request, res: Response) => {
     try {
       const { opportunityId, responseText, contactMethod, operatorApproval, isTest, dryRun, consentStatus } = req.body;
@@ -1747,7 +1751,7 @@ Responde en JSON:
       const isSimulation = !isProductionMode && Boolean(isTest || dryRun);
       const auth = await verifyAuthToken(req);
 
-      // SECURITY CHECK 1: Production Authorization Guard
+      // Authorization Guard: Admin required
       if (!isSimulation && !auth.isAdmin) {
         return res.status(403).json({
           success: false,
@@ -1758,7 +1762,7 @@ Responde en JSON:
         });
       }
 
-      // SECURITY CHECK 2: User Consent Requirement Guard
+      // User Consent Requirement Guard
       if (consentStatus === "REVOKED") {
         return res.status(403).json({
           success: false,
@@ -1769,7 +1773,6 @@ Responde en JSON:
         });
       }
 
-      // SECURITY CHECK 3: Messaging Provider Configuration Check
       const hasMessagingProvider = Boolean(process.env.WHATSAPP_API_TOKEN || process.env.TWILIO_AUTH_TOKEN || process.env.MESSAGING_PROVIDER_KEY);
 
       if (isSimulation) {
@@ -1797,20 +1800,19 @@ Responde en JSON:
         });
       }
 
-      // Since there is no actual external messaging provider library code integrated to talk toTwilio/WhatsApp:
       return res.status(501).json({
         success: false,
         opportunityId,
         status: "PROVIDER_NOT_IMPLEMENTED",
-        error: "No existe una implementación real de cliente para el proveedor seleccionado en el servidor de producción.",
+        error: "No existe una implementación activa para el proveedor de mensajería en el servidor.",
         code: "PROVIDER_NOT_IMPLEMENTED"
       });
-    } catch (err: any) {
+    } catch {
       return res.status(500).json({ error: "Error al orquestar el contacto." });
     }
   });
 
-  // 5. Conversion & Attribution Endpoint
+  // 5. Conversion & Attribution Endpoint (Requires ADMIN)
   app.post("/api/radar/conversion", rateLimiter, async (req: Request, res: Response) => {
     try {
       const { opportunityId, campaign, userId, conversionType, isTest, dryRun } = req.body;
@@ -1840,20 +1842,18 @@ Responde en JSON:
           convertedAt: new Date().toISOString()
         }
       });
-    } catch (err: any) {
+    } catch {
       return res.status(500).json({ error: "Error al registrar la conversión." });
     }
   });
 
-  // 5. Integration Status Check Endpoint (Returns non-sensitive configuration state)
+  // 6. Integration Status Check Endpoint (Returns non-sensitive configuration state)
   app.get("/api/radar/config-status", rateLimiter, async (_req: Request, res: Response) => {
     const hasGeminiKey = Boolean(process.env.GEMINI_API_KEY && process.env.GEMINI_API_KEY !== "MY_GEMINI_API_KEY");
     
-    // Check if Firebase Client config exists
     const hasFirebaseConfigFile = fs.existsSync(path.join(process.cwd(), 'firebase-applet-config.json')) || 
       Boolean(process.env.VITE_FIREBASE_API_KEY || process.env.FIREBASE_CONFIG);
     
-    // Check if Firebase Admin SDK Service Account exists
     const hasFirebaseAdminConfig = Boolean(process.env.FIREBASE_SERVICE_ACCOUNT || process.env.GOOGLE_APPLICATION_CREDENTIALS);
 
     let firebaseStatus = "NOT_CONFIGURED";
@@ -1885,7 +1885,6 @@ Responde en JSON:
     const hasN8nPartial = Boolean(n8nUrl || n8nSecret);
 
     const hasMessagingProvider = Boolean(process.env.WHATSAPP_API_TOKEN || process.env.TWILIO_AUTH_TOKEN || process.env.MESSAGING_PROVIDER_KEY);
-
     const radarMode = process.env.RADAR_MODE || "PRODUCTION";
 
     return res.json({
@@ -1903,7 +1902,7 @@ Responde en JSON:
           badge: hasFirebaseAdminConfig ? "🟢 CONFIGURADO" : "🔴 NO CONFIGURADO",
           details: hasFirebaseAdminConfig 
             ? "Firebase Admin SDK disponible para verificación de ID tokens en backend." 
-            : "Sin servicio de cuenta Firebase Admin. Token verification se realiza previa inicialización."
+            : "Sin servicio de cuenta Firebase Admin."
         },
         firestore: {
           status: hasFirebaseAdminConfig ? "CONFIGURED" : "NOT_CONFIGURED",
@@ -1914,21 +1913,21 @@ Responde en JSON:
           status: hasGeminiKey ? "CONFIGURED" : "NOT_CONFIGURED",
           badge: hasGeminiKey ? "🟢 CONFIGURADO" : "🔴 NO CONFIGURADO",
           model: "gemini-3.6-flash",
-          details: hasGeminiKey ? "Gemini 3.6 Flash activo para análisis de demanda y PII redaction." : "Usando parser heurístico por falta de GEMINI_API_KEY."
+          details: hasGeminiKey ? "Gemini 3.6 Flash activo para análisis de demanda y PII redaction." : "Sin GEMINI_API_KEY configurada."
         },
         metaConnector: {
           status: hasMetaFull ? "CONFIGURED" : (hasMetaPartial ? "PARTIAL" : "NOT_CONFIGURED"),
           badge: hasMetaFull ? "🟢 CONFIGURADO" : (hasMetaPartial ? "🟡 CONFIGURACIÓN PARCIAL" : "🔴 NO CONFIGURADO"),
           details: hasMetaFull 
             ? "Webhook y Graph API listos con verificación de firma HMAC."
-            : "Endpoints de webhook listos en server.ts. Requiere variables META_APP_ID, META_APP_SECRET, META_VERIFY_TOKEN y META_ACCESS_TOKEN."
+            : "Endpoints de webhook listos en server.ts."
         },
         n8nConnector: {
           status: hasN8nFull ? "CONFIGURED" : (hasN8nPartial ? "PARTIAL" : "NOT_CONFIGURED"),
           badge: hasN8nFull ? "🟢 CONFIGURADO" : (hasN8nPartial ? "🟡 CONFIGURACIÓN PARCIAL" : "🔴 NO CONFIGURADO"),
           details: hasN8nFull 
-            ? "Flujo de automatización n8n conectado con secreto encriptado."
-            : "Endpoint /api/radar/n8n/webhook listo. Requiere N8N_WEBHOOK_SECRET para autenticación."
+            ? "Flujo de automatización n8n conectado con secreto seguro."
+            : "Endpoint /api/radar/n8n/webhook listo."
         },
         messagingProvider: {
           status: hasMessagingProvider ? "CONFIGURED" : "NOT_CONFIGURED",
@@ -1942,18 +1941,22 @@ Responde en JSON:
   });
 
   // ==========================================
-  // META CONNECTOR OFFICIAL WEBHOOK ENDPOINTS
+  // 6. META & N8N WEBHOOK INGESTION ENDPOINTS
   // ==========================================
 
-  // GET Meta Webhook Verification (hub.challenge / hub.verify_token)
+  // GET Meta Webhook Verification (hub.challenge / hub.verify_token) with safe comparison
   app.get("/api/radar/meta/webhook", (req: Request, res: Response) => {
-    const mode = req.query['hub.mode'];
-    const token = req.query['hub.verify_token'];
-    const challenge = req.query['hub.challenge'];
+    const mode = req.query['hub.mode'] as string;
+    const token = req.query['hub.verify_token'] as string;
+    const challenge = req.query['hub.challenge'] as string;
 
-    const expectedToken = process.env.META_VERIFY_TOKEN || "CONEXA_RADAR_META_VERIFY_TOKEN_2026";
+    const expectedToken = process.env.META_VERIFY_TOKEN;
 
-    if (mode === 'subscribe' && token === expectedToken) {
+    if (!expectedToken) {
+      return res.status(403).json({ error: "META_VERIFY_TOKEN no configurado en variables de entorno." });
+    }
+
+    if (mode === 'subscribe' && safeTimingCompare(token, expectedToken)) {
       console.log("[MetaConnector] Webhook de Meta verificado correctamente.");
       return res.status(200).send(challenge);
     } else {
@@ -1962,10 +1965,9 @@ Responde en JSON:
     }
   });
 
-  // POST Meta Webhook Ingestion (Page Comments, Messages, Leadgen)
+  // POST Meta Webhook Ingestion with HMAC SHA256 Verification
   app.post("/api/radar/meta/webhook", rateLimiter, async (req: Request, res: Response) => {
     try {
-      // Requirement 11: Verify HMAC SHA256 signature if META_APP_SECRET is set
       const signatureHeader = req.headers['x-hub-signature-256'] as string;
       const metaSecret = process.env.META_APP_SECRET;
 
@@ -1973,18 +1975,19 @@ Responde en JSON:
         if (!signatureHeader) {
           return res.status(401).json({ error: "Acceso denegado. Se requiere encabezado X-Hub-Signature-256 para eventos de Meta." });
         }
-        const expectedHmac = crypto.createHmac('sha256', metaSecret).update(JSON.stringify(req.body)).digest('hex');
+        const raw = Buffer.isBuffer((req as any).rawBody) ? (req as any).rawBody : Buffer.from(JSON.stringify(req.body || {}));
+        const expectedHmac = crypto.createHmac('sha256', metaSecret).update(raw).digest('hex');
         const expectedSignature = `sha256=${expectedHmac}`;
 
-        if (signatureHeader !== expectedSignature) {
+        if (!safeTimingCompare(signatureHeader, expectedSignature)) {
           console.warn("[MetaConnector] Firma X-Hub-Signature-256 no coincide.");
-          return res.status(401).json({ error: "Firma de Webhook Meta inválida (X-Hub-Signature-256 mismatch)." });
+          return res.status(401).json({ error: "Firma de Webhook Meta inválida." });
         }
       }
 
       const body = req.body;
       if (!body || body.object !== 'page') {
-        return res.status(200).send('EVENT_RECEIVED'); // Always respond 200 OK to Meta
+        return res.status(200).send('EVENT_RECEIVED');
       }
 
       const entry = body.entry?.[0];
@@ -1997,17 +2000,14 @@ Responde en JSON:
         return res.status(200).send('EVENT_RECEIVED');
       }
 
-      // Sanitize PII
       const sanitizedDesc = sanitizePIIForAI(rawMessage);
 
-      // Check anti-spam duplicate hash
       const hash = generateOpportunityHash(sanitizedDesc, "Santiago del Estero");
       if (processedOpportunityHashes.has(hash)) {
         return res.status(200).json({ status: "DUPLICATE_IGNORED" });
       }
       processedOpportunityHashes.add(hash);
 
-      // Analyze with AI
       const ai = getGeminiClient();
       let aiResult = {
         category: "Otros",
@@ -2015,9 +2015,9 @@ Responde en JSON:
         intent: "HIGH" as const,
         urgency: "HIGH" as const,
         intentScore: 85,
-        confidenceScore: 92,
+        confidenceScore: 90,
         spamRiskScore: 3,
-        reasoning: "Demanda detectada en página oficial de Meta.",
+        reasoning: "Demanda detectada en canal oficial de Meta.",
         recommendedResponseText: "Hola 👋 Podés ver profesionales verificados en tu zona registrándote gratis en CONEXA."
       };
 
@@ -2040,54 +2040,19 @@ Responde en JSON:
           });
           const parsed = JSON.parse(aiRes.text || "{}");
           if (parsed.category) aiResult = parsed;
-        } catch (e) {
+        } catch {
           console.warn("Fallback AI en Meta webhook");
         }
       }
 
       const opportunityId = `RAD-META-${Math.floor(1000 + Math.random() * 9000)}`;
-      const opportunity = {
-        id: opportunityId,
-        source: "Meta Graph API (Página Oficial)",
-        sourceType: "META_INTEGRATION_OFFICIAL",
-        externalReference: `meta_${pageId}_${senderId}_${Date.now()}`,
-        environment: "production",
-        is_test: false,
-        category: aiResult.category,
-        subcategory: aiResult.subcategory,
-        description: sanitizedDesc,
-        city: "Santiago del Estero",
-        province: "Santiago del Estero",
-        urgency: aiResult.urgency,
-        intentScore: aiResult.intentScore,
-        confidenceScore: aiResult.confidenceScore,
-        status: aiResult.intentScore >= 80 ? "QUALIFIED" : "ANALYZED",
-        detectedAt: "Recién ingresado de Meta",
-        lastUpdated: "Ahora",
-        assignedOperator: "MetaConnector Auto",
-        conversionStatus: "NOT_STARTED",
-        consentStatus: "PENDING_CONSENT",
-        contactMethod: "CANAL_OFICIAL_META",
-        aiAnalysis: aiResult,
-        attribution: {
-          source: "meta_official_page",
-          campaign: "meta_webhook_demand",
-          opportunityId
-        }
-      };
-
-      console.log(`[MetaConnector] Oportunidad creada exitosamente de Meta Webhook: ${opportunityId}`);
       return res.status(200).json({ status: "SUCCESS", opportunityId });
-    } catch (err) {
-      console.error("Error procesando Meta Webhook");
-      return res.status(200).send('EVENT_RECEIVED'); // Always respond 200 to Meta to avoid webhook unbinding
+    } catch {
+      return res.status(200).send('EVENT_RECEIVED');
     }
   });
 
-  // ==========================================
-  // N8N CONNECTOR OFFICIAL WEBHOOK ENDPOINT
-  // ==========================================
-
+  // POST n8n Webhook Ingestion with Timing-Safe Token Check
   app.post("/api/radar/n8n/webhook", rateLimiter, async (req: Request, res: Response) => {
     try {
       const incomingSecret = (req.headers['x-n8n-secret'] || req.headers['x-radar-secret']) as string;
@@ -2095,12 +2060,12 @@ Responde en JSON:
 
       if (!expectedSecret) {
         return res.status(500).json({
-          error: "Acceso denegado. Secreto de webhook N8N_WEBHOOK_SECRET no configurado en las variables de entorno del servidor para producción.",
+          error: "Acceso denegado. Secreto de webhook N8N_WEBHOOK_SECRET no configurado en el servidor para producción.",
           code: "N8N_WEBHOOK_SECRET_NOT_CONFIGURED"
         });
       }
 
-      if (incomingSecret !== expectedSecret) {
+      if (!safeTimingCompare(incomingSecret, expectedSecret)) {
         return res.status(401).json({
           error: "Acceso denegado. Secreto X-N8N-Secret o X-Radar-Secret no válido.",
           code: "INVALID_WEBHOOK_SECRET"
@@ -2116,7 +2081,6 @@ Responde en JSON:
 
       const sanitizedDesc = sanitizePIIForAI(textToAnalyze);
 
-      // Check anti-spam duplicate hash
       const hash = generateOpportunityHash(sanitizedDesc, city || "Santiago del Estero");
       if (processedOpportunityHashes.has(hash)) {
         return res.status(200).json({
@@ -2132,8 +2096,8 @@ Responde en JSON:
         subcategory: "Consulta n8n Workflow",
         intent: "HIGH" as const,
         urgency: "HIGH" as const,
-        intentScore: 88,
-        confidenceScore: 95,
+        intentScore: 85,
+        confidenceScore: 90,
         spamRiskScore: 1,
         reasoning: "Procesado por workflow verificado en n8n.",
         recommendedResponseText: "Hola 👋 Podés consultar profesionales verificados en tu zona registrándote gratis en CONEXA."
@@ -2158,7 +2122,7 @@ Responde en JSON:
           });
           const parsed = JSON.parse(aiRes.text || "{}");
           if (parsed.category) aiResult = parsed;
-        } catch (e) {
+        } catch {
           console.warn("Fallback AI en n8n webhook");
         }
       }
@@ -2195,23 +2159,20 @@ Responde en JSON:
         }
       };
 
-      console.log(`[N8NConnector] Oportunidad creada de n8n Webhook: ${opportunityId}`);
       return res.status(201).json({
         success: true,
         opportunityId,
         status: "QUALIFIED",
         opportunity
       });
-    } catch (err) {
-      console.error("Error en /api/radar/n8n/webhook");
+    } catch {
       return res.status(500).json({ error: "Error interno al procesar webhook de n8n." });
     }
   });
 
-
-  // Global Error Handler Middleware
+  // Global Error Handler Middleware: Never exposes stack traces or internal errors
   app.use((err: any, _req: Request, res: Response, _next: NextFunction) => {
-    console.error("Internal Server Error");
+    console.error("Internal Server Error:", err?.message || "Unknown error");
     res.status(500).json({
       error: "Ha ocurrido un error inesperado en el servidor.",
       code: "INTERNAL_SERVER_ERROR"
@@ -2239,6 +2200,6 @@ Responde en JSON:
 }
 
 startServer().catch((err) => {
-  console.error("Failed to start CONEXA server:", err);
+  console.error("Failed to start CONEXA server:", err?.message || err);
   process.exit(1);
 });
