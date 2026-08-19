@@ -130,15 +130,70 @@ async function startServer() {
     next();
   });
 
-  // CORS Policy Configuration for API Endpoints
+  // Explicit CORS Policy based on ALLOWED_ORIGINS and environment configuration
+  const isProduction = process.env.NODE_ENV === "production";
+  
+  // Parse explicit allowed origins from environment
+  const configuredAllowedOrigins = (process.env.ALLOWED_ORIGINS || "")
+    .split(",")
+    .map(origin => origin.trim().replace(/\/$/, ""))
+    .filter(Boolean);
+
+  const appUrlConfigured = (process.env.APP_URL || "").trim().replace(/\/$/, "");
+  if (appUrlConfigured && !configuredAllowedOrigins.includes(appUrlConfigured)) {
+    configuredAllowedOrigins.push(appUrlConfigured);
+  }
+
+  // Development localhost origins allowed ONLY when not strictly production or in dev
+  const devLocalOrigins = [
+    "http://localhost:3000",
+    "http://localhost:5173",
+    "http://127.0.0.1:3000",
+    "http://127.0.0.1:5173"
+  ];
+
   app.use((req: Request, res: Response, next: NextFunction) => {
-    res.setHeader("Access-Control-Allow-Origin", "*");
-    res.setHeader("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS");
-    res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Requested-With, X-Signature, X-Request-Id, X-Radar-Secret, X-N8N-Secret, X-Admin-Key, X-Hub-Signature-256");
-    if (req.method === "OPTIONS") {
-      return res.status(204).end();
+    const origin = req.headers.origin;
+
+    // Direct non-browser requests (e.g. S2S webhooks or curl) do not send Origin header
+    if (!origin) {
+      return next();
     }
-    next();
+
+    const normalizedOrigin = origin.replace(/\/$/, "");
+
+    let isAllowed = false;
+
+    if (configuredAllowedOrigins.includes(normalizedOrigin)) {
+      isAllowed = true;
+    } else if (!isProduction && devLocalOrigins.includes(normalizedOrigin)) {
+      isAllowed = true;
+    }
+
+    if (isAllowed) {
+      res.setHeader("Access-Control-Allow-Origin", origin);
+      res.setHeader("Vary", "Origin");
+      res.setHeader("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS");
+      res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Requested-With");
+      
+      if (req.method === "OPTIONS") {
+        return res.status(204).end();
+      }
+      return next();
+    }
+
+    // Reject unauthorized browser Origin
+    if (req.method === "OPTIONS") {
+      return res.status(403).json({
+        error: "CORS_ORIGIN_NOT_ALLOWED",
+        message: "El origen de la solicitud no está autorizado por la política CORS."
+      });
+    }
+
+    return res.status(403).json({
+      error: "CORS_ORIGIN_NOT_ALLOWED",
+      message: "El origen de la solicitud no está autorizado por la política CORS."
+    });
   });
 
   // Request Body Size Limit with Raw Body Preservation for Webhook Signature Verification
@@ -230,7 +285,7 @@ async function startServer() {
     return aiClient;
   }
 
-  // Centralized Auth Verification & Middleware
+  // Centralized Firebase Auth Verification & Custom Claims for user endpoints
   async function verifyAuthToken(req: Request): Promise<{
     isAuthenticated: boolean;
     isAdmin: boolean;
@@ -238,16 +293,7 @@ async function startServer() {
     role?: string;
     errorReason?: string;
   }> {
-    // 1. Dedicated S2S Admin Secret Key for automated backend tasks (if explicitly configured)
-    const adminKeyHeader = req.headers['x-admin-key'] as string;
-    const expectedAdminSecret = process.env.ADMIN_SECRET_KEY?.trim();
-    if (adminKeyHeader && expectedAdminSecret && expectedAdminSecret.length >= 24) {
-      if (safeTimingCompare(adminKeyHeader, expectedAdminSecret)) {
-        return { isAuthenticated: true, isAdmin: true, userId: 'admin_service_operator', role: 'SUPER_ADMIN' };
-      }
-    }
-
-    // 2. Authoritative Firebase ID Token verification
+    // Authoritative Firebase ID Token verification with Custom Claims
     const authHeader = req.headers.authorization;
     if (!authHeader || !authHeader.startsWith('Bearer ')) {
       return { isAuthenticated: false, isAdmin: false, errorReason: "MISSING_BEARER_TOKEN" };
@@ -281,6 +327,18 @@ async function startServer() {
     } catch {
       return { isAuthenticated: false, isAdmin: false, errorReason: "INVALID_FIREBASE_ID_TOKEN" };
     }
+  }
+
+  /**
+   * Dedicated S2S Infrastructure Verification for automated backend tasks / pipelines
+   */
+  function verifyS2SAdminKey(req: Request): boolean {
+    const adminKeyHeader = req.headers['x-admin-key'] as string;
+    const expectedAdminSecret = process.env.ADMIN_SECRET_KEY?.trim();
+    if (!adminKeyHeader || !expectedAdminSecret || expectedAdminSecret.length < 24) {
+      return false;
+    }
+    return safeTimingCompare(adminKeyHeader, expectedAdminSecret);
   }
 
   // ==========================================
@@ -942,6 +1000,7 @@ Responde en JSON con:
   });
 
   // Account Deletion API Endpoint (GDPR/ARCO Compliance)
+  // Requires authenticated user (own account) or Firebase Admin ID Token with ADMIN claim
   app.post("/api/user/delete-account", rateLimiter, async (req: Request, res: Response) => {
     try {
       const { userId } = req.body;
@@ -967,12 +1026,12 @@ Responde en JSON con:
         });
       }
 
-      // Ensure user can only request deletion of their own account unless authorized ADMIN/SUPER_ADMIN
+      // Ensure user can only request deletion of their own account unless authorized ADMIN/SUPER_ADMIN via Firebase Token Claims
       const canDelete = (auth.userId === userId) || (auth.isAdmin === true);
       if (!canDelete) {
         return res.status(403).json({
           success: false,
-          error: "Acceso denegado. Solo podés solicitar la eliminación de tu propia cuenta o poseer perfil de Administrador.",
+          error: "Acceso denegado. Solo podés solicitar la eliminación de tu propia cuenta o poseer perfil de Administrador verificado.",
           code: "FORBIDDEN"
         });
       }
@@ -1072,13 +1131,16 @@ Responde en JSON con:
       // Context separation: USER_REQUEST vs ADMIN RADAR ANALYSIS
       const isUserRequest = contextType === 'USER_REQUEST';
       if (!isUserRequest) {
-        const auth = await verifyAuthToken(req);
         const isSimulation = Boolean(req.body.isSimulation || req.body.isTest);
-        if (!isSimulation && !auth.isAdmin) {
-          return res.status(403).json({
-            error: "Acceso denegado. El análisis de RADAR administrativo requiere rol de ADMINISTRADOR.",
-            code: "UNAUTHORIZED_ADMIN_REQUIRED"
-          });
+        if (!isSimulation) {
+          const auth = await verifyAuthToken(req);
+          const isS2S = verifyS2SAdminKey(req);
+          if (!auth.isAdmin && !isS2S) {
+            return res.status(403).json({
+              error: "Acceso denegado. El análisis de RADAR administrativo requiere rol de ADMINISTRADOR verificado por Firebase Auth.",
+              code: "UNAUTHORIZED_ADMIN_REQUIRED"
+            });
+          }
         }
       }
 
@@ -1445,19 +1507,14 @@ Clasificá la oportunidad y responde ÚNICAMENTE en formato JSON con la siguient
       let dataSource = "";
 
       if (isProductionMode) {
-        // PRODUCTION GUARD: Authenticate and authorize as ADMIN/SUPER_ADMIN
+        // PRODUCTION GUARD: Authenticate and authorize as ADMIN/SUPER_ADMIN via Firebase Token or S2S Infrastructure key
         const auth = await verifyAuthToken(req);
-        if (!auth.isAuthenticated) {
-          return res.status(401).json({
-            success: false,
-            error: "Acceso denegado. Se requiere un Firebase ID Token válido en el encabezado Authorization.",
-            code: "UNAUTHORIZED"
-          });
-        }
-        if (!auth.isAdmin) {
+        const isS2S = verifyS2SAdminKey(req);
+
+        if (!auth.isAdmin && !isS2S) {
           return res.status(403).json({
             success: false,
-            error: "Acceso denegado. Solo administradores autorizados pueden realizar consultas del RADAR MATCH en producción.",
+            error: "Acceso denegado. Solo administradores autorizados con Firebase ID Token o pipelines S2S verificados pueden consultar RADAR MATCH en producción.",
             code: "FORBIDDEN"
           });
         }
@@ -1738,7 +1795,7 @@ Responde en JSON:
     }
   });
 
-  // 4. Contact Orchestration Endpoint (Requires ADMIN / SUPER_ADMIN)
+  // 4. Contact Orchestration Endpoint (Requires Firebase Auth ADMIN / SUPER_ADMIN or S2S Admin Key)
   app.post("/api/radar/contact", rateLimiter, async (req: Request, res: Response) => {
     try {
       const { opportunityId, responseText, contactMethod, operatorApproval, isTest, dryRun, consentStatus } = req.body;
@@ -1749,17 +1806,20 @@ Responde en JSON:
 
       const isProductionMode = (process.env.RADAR_MODE || process.env.APP_ENV || "PRODUCTION").toUpperCase() === "PRODUCTION";
       const isSimulation = !isProductionMode && Boolean(isTest || dryRun);
-      const auth = await verifyAuthToken(req);
 
-      // Authorization Guard: Admin required
-      if (!isSimulation && !auth.isAdmin) {
-        return res.status(403).json({
-          success: false,
-          opportunityId,
-          status: "REJECTED_UNAUTHORIZED",
-          error: "Acceso denegado. Los envíos de contacto en producción requieren autenticación y rol de ADMINISTRADOR.",
-          code: "UNAUTHORIZED_ADMIN_REQUIRED"
-        });
+      // Authorization Guard: Firebase Admin Role or S2S Key required in production
+      if (!isSimulation) {
+        const auth = await verifyAuthToken(req);
+        const isS2S = verifyS2SAdminKey(req);
+        if (!auth.isAdmin && !isS2S) {
+          return res.status(403).json({
+            success: false,
+            opportunityId,
+            status: "REJECTED_UNAUTHORIZED",
+            error: "Acceso denegado. Los envíos de contacto en producción requieren autenticación y rol de ADMINISTRADOR verificado por Firebase.",
+            code: "UNAUTHORIZED_ADMIN_REQUIRED"
+          });
+        }
       }
 
       // User Consent Requirement Guard
@@ -1818,15 +1878,18 @@ Responde en JSON:
       const { opportunityId, campaign, userId, conversionType, isTest, dryRun } = req.body;
       const isProductionMode = (process.env.RADAR_MODE || process.env.APP_ENV || "PRODUCTION").toUpperCase() === "PRODUCTION";
       const isSimulation = !isProductionMode && Boolean(isTest || dryRun);
-      const auth = await verifyAuthToken(req);
 
-      if (!isSimulation && !auth.isAdmin) {
-        return res.status(403).json({
-          success: false,
-          status: "REJECTED_UNAUTHORIZED",
-          error: "Acceso denegado. Registrar conversiones reales en producción requiere autorización de ADMINISTRADOR.",
-          code: "UNAUTHORIZED_ADMIN_REQUIRED"
-        });
+      if (!isSimulation) {
+        const auth = await verifyAuthToken(req);
+        const isS2S = verifyS2SAdminKey(req);
+        if (!auth.isAdmin && !isS2S) {
+          return res.status(403).json({
+            success: false,
+            status: "REJECTED_UNAUTHORIZED",
+            error: "Acceso denegado. Registrar conversiones reales en producción requiere autorización de ADMINISTRADOR vía Firebase Token o pipeline S2S.",
+            code: "UNAUTHORIZED_ADMIN_REQUIRED"
+          });
+        }
       }
 
       return res.json({
@@ -1993,8 +2056,6 @@ Responde en JSON:
       const entry = body.entry?.[0];
       const changes = entry?.changes?.[0]?.value || entry?.messaging?.[0];
       const rawMessage = changes?.message?.text || changes?.comment_text || changes?.leadgen_data || "";
-      const senderId = changes?.sender?.id || changes?.from?.id || "meta_user_anonymous";
-      const pageId = entry?.id || "meta_page";
 
       if (!rawMessage || typeof rawMessage !== "string") {
         return res.status(200).send('EVENT_RECEIVED');
