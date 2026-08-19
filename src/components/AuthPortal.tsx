@@ -190,7 +190,7 @@ export const AuthPortal: React.FC = () => {
       } else if (err.code === 'auth/weak-password') {
         errMsg = 'La contraseña debe tener al menos 6 caracteres.';
       } else if (err.code === 'auth/operation-not-allowed') {
-        errMsg = 'El método de autenticación con Correo/Contraseña no está habilitado en la Consola de Firebase (Authentication > Sign-in method).';
+        errMsg = 'El método de autenticación con Correo/Contraseña no está habilitado en el proyecto activo de Firebase. Revisá Firebase Console > Authentication > Sign-in method y confirmá que el projectId de firebase-applet-config.json coincida con el proyecto real.';
       }
       setError(errMsg);
     } finally {

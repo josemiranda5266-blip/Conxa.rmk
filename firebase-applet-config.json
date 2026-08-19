@@ -1,12 +1,9 @@
 {
-  "projectId": "smurfy-shelter-kt8c4",
-  "appId": "1:473925566637:web:e7a9ebfb2e986f31750624",
-  "apiKey": "AIzaSyA8RnCDGw4U7H-ssvBFHGr4nmhAdVEOCLo",
-  "authDomain": "smurfy-shelter-kt8c4.firebaseapp.com",
-  "firestoreDatabaseId": "ai-studio-conexarmx-1f9071e2-3398-4cfa-9495-2f61c3456201",
-  "storageBucket": "smurfy-shelter-kt8c4.firebasestorage.app",
-  "messagingSenderId": "473925566637",
-  "measurementId": "",
-  "oAuthClientId": "473925566637-d6ano7snh5lpl6fqcjiktrlb9i2av5n3.apps.googleusercontent.com",
-  "recaptchaSiteKey": ""
+  "projectId": "conex-96e79",
+  "appId": "1:633406921824:web:ef1e7ad2e0b578c5807705",
+  "apiKey": "AIzaSyB7KT5nOLQfdTLNZtiGog7rdurPWcgNju8",
+  "authDomain": "conex-96e79.firebaseapp.com",
+  "storageBucket": "conex-96e79.firebasestorage.app",
+  "messagingSenderId": "633406921824",
+  "measurementId": "G-EDB1NVQ3RK"
 }
