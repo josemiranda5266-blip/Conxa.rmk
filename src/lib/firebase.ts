@@ -1,21 +1,57 @@
 /// <reference types="vite/client" />
+declare module '*.json' {
+  const value: any;
+  export default value;
+}
+
 import { initializeApp, getApps, getApp } from 'firebase/app';
 import { getAuth, Auth } from 'firebase/auth';
 import { getFirestore, Firestore } from 'firebase/firestore';
+import firebaseAppletConfig from '../../firebase-applet-config.json';
 
-// Check if firebase-applet-config.json exists or environment config is provided
+type FirebaseConfig = {
+  apiKey?: string;
+  authDomain?: string;
+  projectId?: string;
+  storageBucket?: string;
+  messagingSenderId?: string;
+  appId?: string;
+  measurementId?: string;
+  firestoreDatabaseId?: string;
+};
+
+const getFirebaseConfig = (): FirebaseConfig | null => {
+  const configFromFile =
+    firebaseAppletConfig && typeof firebaseAppletConfig === 'object' && Object.values(firebaseAppletConfig as Record<string, unknown>).some(Boolean)
+      ? (firebaseAppletConfig as FirebaseConfig)
+      : null;
+
+  const configFromEnv: FirebaseConfig = {
+    apiKey: import.meta.env.VITE_FIREBASE_API_KEY || import.meta.env.FIREBASE_API_KEY || undefined,
+    authDomain: import.meta.env.VITE_FIREBASE_AUTH_DOMAIN || import.meta.env.FIREBASE_AUTH_DOMAIN || undefined,
+    projectId: import.meta.env.VITE_FIREBASE_PROJECT_ID || import.meta.env.FIREBASE_PROJECT_ID || undefined,
+    storageBucket: import.meta.env.VITE_FIREBASE_STORAGE_BUCKET || import.meta.env.FIREBASE_STORAGE_BUCKET || undefined,
+    messagingSenderId: import.meta.env.VITE_FIREBASE_MESSAGING_SENDER_ID || import.meta.env.FIREBASE_MESSAGING_SENDER_ID || undefined,
+    appId: import.meta.env.VITE_FIREBASE_APP_ID || import.meta.env.FIREBASE_APP_ID || undefined,
+    measurementId: import.meta.env.VITE_FIREBASE_MEASUREMENT_ID || import.meta.env.FIREBASE_MEASUREMENT_ID || undefined,
+    firestoreDatabaseId: import.meta.env.VITE_FIREBASE_DATABASE_ID || import.meta.env.FIREBASE_DATABASE_ID || undefined,
+  };
+
+  if (configFromFile) {
+    return { ...configFromEnv, ...configFromFile };
+  }
+
+  return Object.values(configFromEnv).some(Boolean) ? configFromEnv : null;
+};
+
 let firebaseApp: ReturnType<typeof initializeApp> | null = null;
 let authInstance: Auth | null = null;
 let dbInstance: Firestore | null = null;
 
 try {
-  // Dynamically import or check config if available
-  // Standard AI Studio Firebase config file name is firebase-applet-config.json
-  const modules = import.meta.glob('/firebase-applet-config.json', { eager: true });
-  const configKey = Object.keys(modules)[0];
-  
-  if (configKey && (modules[configKey] as any)?.default) {
-    const config = (modules[configKey] as any).default;
+  const config = getFirebaseConfig();
+
+  if (config && config.apiKey && config.projectId && config.appId) {
     firebaseApp = getApps().length === 0 ? initializeApp(config) : getApp();
     authInstance = getAuth(firebaseApp);
     if (config.firestoreDatabaseId) {
@@ -23,9 +59,9 @@ try {
     } else {
       dbInstance = getFirestore(firebaseApp);
     }
-    console.log('[CONEXA FIREBASE] Firebase inicializado con configuración oficial.');
+    console.log(`[CONEXA FIREBASE] Firebase inicializado correctamente para el proyecto: ${config.projectId}`);
   } else {
-    console.warn('[CONEXA FIREBASE] firebase-applet-config.json no detectado. DEMO MODE — Firebase Authentication no configurado.');
+    console.warn('[CONEXA FIREBASE] No se encontró una configuración válida de Firebase. DEMO MODE — Firebase Authentication no configurado.');
   }
 } catch (e) {
   console.warn('[CONEXA FIREBASE] Error al inicializar Firebase:', e);
