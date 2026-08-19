@@ -20,6 +20,7 @@ import { OnboardingModal } from './components/OnboardingModal';
 import { RoleSelectionModal } from './components/RoleSelectionModal';
 import { BecomeProfessionalModal } from './components/BecomeProfessionalModal';
 import { DemandLanding } from './components/radar/DemandLanding';
+import { LandingPage } from './components/LandingPage';
 import { AuthPortal } from './components/AuthPortal';
 import { UserProfile, ServiceRequest, Quote } from './types';
 import { 
@@ -103,9 +104,14 @@ const MainAppContent: React.FC = () => {
 
   if (!currentUser) {
     return (
-      <div className="min-h-screen bg-gradient-to-br from-slate-100 via-indigo-50/50 to-sky-100/60 flex items-center justify-center p-4">
-        <AuthPortal />
-      </div>
+      <LandingPage 
+        onEnterApp={() => {
+          // If the visitor triggers direct entry, we ensure auth state is ready
+        }}
+        onSelectCategory={(catName) => {
+          setSelectedCategory(catName);
+        }}
+      />
     );
   }
 
@@ -124,6 +130,7 @@ const MainAppContent: React.FC = () => {
         onOpenAdminPanel={() => setIsAdminPanelOpen(true)}
         onOpenRegisterModal={() => setIsRoleSelectionModalOpen(true)}
         onOpenBecomePro={() => setIsBecomeProModalOpen(true)}
+        onOpenLanding={() => setIsLandingPreviewOpen(true)}
       />
 
       {/* Main Container */}
@@ -133,7 +140,18 @@ const MainAppContent: React.FC = () => {
 
         {/* View Switcher based on Navigation Tabs / Admin mode */}
         {isLandingPreviewOpen ? (
-          <DemandLanding onCloseLanding={() => setIsLandingPreviewOpen(false)} />
+          <div className="fixed inset-0 z-50 overflow-y-auto bg-slate-950">
+            <div className="sticky top-3 right-4 z-50 flex justify-end px-4 pointer-events-none">
+              <button
+                onClick={() => setIsLandingPreviewOpen(false)}
+                className="pointer-events-auto bg-blue-600 hover:bg-blue-500 text-white font-bold text-xs px-4 py-2.5 rounded-xl shadow-2xl flex items-center gap-1.5 cursor-pointer border border-white/20"
+              >
+                <X size={15} />
+                <span>Volver a la App</span>
+              </button>
+            </div>
+            <LandingPage onEnterApp={() => setIsLandingPreviewOpen(false)} />
+          </div>
         ) : isAdminPanelOpen ? (
           <div className="space-y-4">
             <button 

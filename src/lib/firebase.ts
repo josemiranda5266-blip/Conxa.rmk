@@ -54,7 +54,7 @@ try {
   if (config && config.apiKey && config.projectId && config.appId) {
     firebaseApp = getApps().length === 0 ? initializeApp(config) : getApp();
     authInstance = getAuth(firebaseApp);
-    if (config.firestoreDatabaseId) {
+    if (config.firestoreDatabaseId && config.firestoreDatabaseId !== '(default)') {
       dbInstance = getFirestore(firebaseApp, config.firestoreDatabaseId);
     } else {
       dbInstance = getFirestore(firebaseApp);
@@ -71,3 +71,30 @@ export const app = firebaseApp;
 export const auth = authInstance;
 export const db = dbInstance;
 export const isFirebaseConfigured = Boolean(authInstance && dbInstance);
+
+/**
+ * Recursively cleans an object or array to remove any properties whose value is `undefined`.
+ * Firebase Firestore SDK throws an error if any property value is `undefined`.
+ */
+export function cleanFirestoreData<T>(data: T): T {
+  if (data === null || data === undefined || typeof data !== 'object') {
+    return data;
+  }
+  if (Array.isArray(data)) {
+    return data
+      .filter((item) => item !== undefined)
+      .map((item) => (typeof item === 'object' && item !== null ? cleanFirestoreData(item) : item)) as unknown as T;
+  }
+  const cleaned: Record<string, any> = {};
+  for (const [key, value] of Object.entries(data as Record<string, any>)) {
+    if (value === undefined) {
+      continue;
+    }
+    if (value !== null && typeof value === 'object' && !(value instanceof Date)) {
+      cleaned[key] = cleanFirestoreData(value);
+    } else {
+      cleaned[key] = value;
+    }
+  }
+  return cleaned as T;
+}

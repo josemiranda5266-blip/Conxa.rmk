@@ -32,7 +32,30 @@ function getFirebaseAdmin(): any {
         const decoded = Buffer.from(saEnv, 'base64').toString('utf8');
         parsedSA = JSON.parse(decoded);
       }
-      credential = firebaseAdmin.cert(parsedSA);
+
+      // Robust normalization of service account object (supports standard JSON & translated keys)
+      let key = (parsedSA.private_key || parsedSA.clave_privada || '')
+        .replace(/-----BEGIN CLAVE PRIVADA-----/g, '-----BEGIN PRIVATE KEY-----')
+        .replace(/-----END CLAVE PRIVADA-----/g, '-----END PRIVATE KEY-----')
+        .replace(/\\n/g, '\n');
+
+      if (key && !key.includes('\n') && key.includes('-----BEGIN PRIVATE KEY-----')) {
+        const header = '-----BEGIN PRIVATE KEY-----';
+        const footer = '-----END PRIVATE KEY-----';
+        const middle = key.replace(header, '').replace(footer, '').replace(/\s+/g, '');
+        const chunks = middle.match(/.{1,64}/g);
+        if (chunks) {
+          key = header + '\n' + chunks.join('\n') + '\n' + footer + '\n';
+        }
+      }
+
+      const certObj = {
+        projectId: parsedSA.project_id || parsedSA.id_proyecto,
+        clientEmail: parsedSA.client_email || parsedSA.correo_cliente,
+        privateKey: key
+      };
+
+      credential = firebaseAdmin.cert(certObj);
     } catch (err: any) {
       console.error('[FIREBASE ADMIN] Error parseando FIREBASE_SERVICE_ACCOUNT:', err?.message || err);
     }
@@ -432,7 +455,7 @@ Responde en JSON con:
       } catch {}
     }
 
-    let clientProjectId = 'smurfy-shelter-kt8c4';
+    let clientProjectId = 'conex-96e79';
     try {
       const configPath = path.join(process.cwd(), 'firebase-applet-config.json');
       if (fs.existsSync(configPath)) {

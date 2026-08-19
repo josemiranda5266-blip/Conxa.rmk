@@ -14,6 +14,7 @@ interface HeaderProps {
   onOpenAdminPanel: () => void;
   onOpenRegisterModal: () => void;
   onOpenBecomePro: () => void;
+  onOpenLanding?: () => void;
 }
 
 const CITIES = [
@@ -31,7 +32,8 @@ export const Header: React.FC<HeaderProps> = ({
   onOpenVerifications,
   onOpenAdminPanel,
   onOpenRegisterModal,
-  onOpenBecomePro
+  onOpenBecomePro,
+  onOpenLanding
 }) => {
   const { 
     currentUser, users, switchUserRole, switchActiveMode, selectedCity, setSelectedCity, 
@@ -306,6 +308,19 @@ export const Header: React.FC<HeaderProps> = ({
                 )}
 
                 <div className="pt-2 border-t border-slate-100 space-y-1">
+                  {onOpenLanding && (
+                    <button
+                      onClick={() => {
+                        setShowRoleMenu(false);
+                        onOpenLanding();
+                      }}
+                      className="w-full text-left p-2 hover:bg-slate-100 rounded-2xl font-bold text-slate-800 flex items-center gap-2"
+                    >
+                      <Sparkles size={15} className="text-emerald-600" />
+                      <span>Ver Landing Page Pública</span>
+                    </button>
+                  )}
+
                   <button
                     onClick={() => {
                       setShowRoleMenu(false);

@@ -18,7 +18,7 @@ try {
     const config = (modules[configKey] as any).default;
     firebaseApp = getApps().length === 0 ? initializeApp(config) : getApp();
     authInstance = getAuth(firebaseApp);
-    if (config.firestoreDatabaseId) {
+    if (config.firestoreDatabaseId && config.firestoreDatabaseId !== '(default)') {
       dbInstance = getFirestore(firebaseApp, config.firestoreDatabaseId);
     } else {
       dbInstance = getFirestore(firebaseApp);

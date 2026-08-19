@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { auth, db } from '../lib/firebase';
+import { auth, db, cleanFirestoreData } from '../lib/firebase';
 import { 
   signInWithEmailAndPassword, 
   createUserWithEmailAndPassword, 
@@ -8,22 +8,49 @@ import {
   GoogleAuthProvider
 } from 'firebase/auth';
 import { doc, getDoc, setDoc } from 'firebase/firestore';
-import { Shield, KeyRound, Mail, User, Phone, CheckCircle2, AlertCircle, Wrench, Users } from 'lucide-react';
+import { Shield, KeyRound, Mail, User, Phone, CheckCircle2, AlertCircle, Wrench, Users, X } from 'lucide-react';
 import { Role } from '../types';
 import { useApp } from '../context/AppContext';
 
-export const AuthPortal: React.FC = () => {
-  const { closeAuthPortal, authSessionReady, authLoading, currentUser } = useApp();
-  const [isLogin, setIsLogin] = useState(true);
+export interface AuthPortalProps {
+  initialIsLogin?: boolean;
+  initialRole?: Role;
+  initialProfession?: string;
+  onClose?: () => void;
+}
+
+export const AuthPortal: React.FC<AuthPortalProps> = ({
+  initialIsLogin = true,
+  initialRole = 'USER',
+  initialProfession = 'Electricista Matriculado',
+  onClose
+}) => {
+  const { closeAuthPortal, authSessionReady, authLoading, currentUser, trackEvent } = useApp();
+  const [isLogin, setIsLogin] = useState(initialIsLogin);
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [name, setName] = useState('');
   const [phone, setPhone] = useState('');
-  const [selectedRole, setSelectedRole] = useState<Role>('USER');
+  const [selectedRole, setSelectedRole] = useState<Role>(initialRole);
+  const [professionNameInput, setProfessionNameInput] = useState(initialProfession);
   const [loading, setLoading] = useState(false);
   const [isAwaitingSessionSync, setIsAwaitingSessionSync] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
+
+  useEffect(() => {
+    setIsLogin(initialIsLogin);
+  }, [initialIsLogin]);
+
+  useEffect(() => {
+    setSelectedRole(initialRole);
+  }, [initialRole]);
+
+  useEffect(() => {
+    if (initialProfession) {
+      setProfessionNameInput(initialProfession);
+    }
+  }, [initialProfession]);
 
   // Monitor AppContext states reactively to finalize session sync and close the portal
   useEffect(() => {
@@ -60,19 +87,26 @@ export const AuthPortal: React.FC = () => {
         const docSnap = await getDoc(userDocRef);
 
         if (!docSnap.exists()) {
-          // Initialize user document if first time login
-          await setDoc(userDocRef, {
+          const isPro = selectedRole === 'PROFESSIONAL';
+          const resolvedProfession = isPro 
+            ? (professionNameInput.trim() || 'Profesional Contratista')
+            : undefined;
+
+          // Initialize user document safely without undefined properties
+          const userDocData: Record<string, any> = {
             id: firebaseUser.uid,
-            name: firebaseUser.displayName || name || 'Usuario Conexa',
-            email: firebaseUser.email || '',
-            phonePrivate: phone || '',
-            avatar: firebaseUser.photoURL || 'https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?auto=format&fit=crop&q=80&w=150',
+            name: firebaseUser.displayName || name.trim() || 'Usuario CONEXA',
+            email: firebaseUser.email || email.trim() || '',
+            phonePrivate: phone.trim() || '',
+            avatar: firebaseUser.photoURL || (isPro 
+              ? 'https://images.unsplash.com/photo-1540569014015-19a7be504e3a?auto=format&fit=crop&q=80&w=150'
+              : 'https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?auto=format&fit=crop&q=80&w=150'),
             role: selectedRole,
             joinedDate: new Date().toLocaleDateString('es-AR'),
-            activeMode: selectedRole,
-            isProfessional: selectedRole === 'PROFESSIONAL',
-            hasProfessionalProfile: selectedRole === 'PROFESSIONAL',
-            professionName: selectedRole === 'PROFESSIONAL' ? 'Profesional Contratista' : undefined,
+            activeMode: isPro ? 'PROFESSIONAL' : 'CLIENT',
+            isProfessional: isPro,
+            hasProfessionalProfile: isPro,
+            hasClientProfile: true,
             location: {
               city: 'Santiago del Estero',
               province: 'Santiago del Estero',
@@ -83,12 +117,18 @@ export const AuthPortal: React.FC = () => {
             },
             isIdentityVerified: false,
             identityVerificationStatus: 'NONE',
-            rating: selectedRole === 'PROFESSIONAL' ? 5.0 : 0,
+            rating: isPro ? 5.0 : 0,
             reviewCount: 0,
             jobsCompleted: 0,
-            trustScore: 60,
+            trustScore: isPro ? 60 : 50,
             availabilityStatus: 'DISPONIBLE'
-          });
+          };
+
+          if (isPro && resolvedProfession) {
+            userDocData.professionName = resolvedProfession;
+          }
+
+          await setDoc(userDocRef, cleanFirestoreData(userDocData));
         }
       }
 
@@ -125,6 +165,16 @@ export const AuthPortal: React.FC = () => {
         if (!name.trim()) {
           throw new Error('Por favor ingresá tu nombre completo.');
         }
+
+        const isPro = selectedRole === 'PROFESSIONAL';
+        if (isPro && !professionNameInput.trim()) {
+          throw new Error('Por favor indicá tu oficio o especialidad profesional.');
+        }
+
+        const resolvedProfession = isPro 
+          ? (professionNameInput.trim() || 'Profesional Contratista')
+          : undefined;
+
         const userCredential = await createUserWithEmailAndPassword(auth, email, password);
         const firebaseUser = userCredential.user;
         if (!firebaseUser) {
@@ -133,8 +183,8 @@ export const AuthPortal: React.FC = () => {
 
         // Update Auth Profile
         await updateProfile(firebaseUser, {
-          displayName: name,
-          photoURL: selectedRole === 'PROFESSIONAL' 
+          displayName: name.trim(),
+          photoURL: isPro 
             ? 'https://images.unsplash.com/photo-1540569014015-19a7be504e3a?auto=format&fit=crop&q=80&w=150'
             : 'https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?auto=format&fit=crop&q=80&w=150'
         });
@@ -142,20 +192,20 @@ export const AuthPortal: React.FC = () => {
         // Initialize user document in Firestore to secure their role mapping
         if (db) {
           const userDocRef = doc(db, 'users', firebaseUser.uid);
-          await setDoc(userDocRef, {
+          const userDocData: Record<string, any> = {
             id: firebaseUser.uid,
-            name,
-            email,
-            phonePrivate: phone,
-            avatar: selectedRole === 'PROFESSIONAL' 
+            name: name.trim(),
+            email: email.trim(),
+            phonePrivate: phone.trim() || '',
+            avatar: isPro 
               ? 'https://images.unsplash.com/photo-1540569014015-19a7be504e3a?auto=format&fit=crop&q=80&w=150'
               : 'https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?auto=format&fit=crop&q=80&w=150',
             role: selectedRole,
             joinedDate: new Date().toLocaleDateString('es-AR'),
-            activeMode: selectedRole,
-            isProfessional: selectedRole === 'PROFESSIONAL',
-            hasProfessionalProfile: selectedRole === 'PROFESSIONAL',
-            professionName: selectedRole === 'PROFESSIONAL' ? 'Profesional Contratista' : undefined,
+            activeMode: isPro ? 'PROFESSIONAL' : 'CLIENT',
+            isProfessional: isPro,
+            hasProfessionalProfile: isPro,
+            hasClientProfile: true,
             location: {
               city: 'Santiago del Estero',
               province: 'Santiago del Estero',
@@ -166,15 +216,22 @@ export const AuthPortal: React.FC = () => {
             },
             isIdentityVerified: false,
             identityVerificationStatus: 'NONE',
-            rating: selectedRole === 'PROFESSIONAL' ? 5.0 : 0,
+            rating: isPro ? 5.0 : 0,
             reviewCount: 0,
             jobsCompleted: 0,
-            trustScore: 60,
+            trustScore: isPro ? 60 : 50,
             availabilityStatus: 'DISPONIBLE'
-          });
+          };
+
+          if (isPro && resolvedProfession) {
+            userDocData.professionName = resolvedProfession;
+          }
+
+          await setDoc(userDocRef, cleanFirestoreData(userDocData));
         }
 
         await firebaseUser.getIdToken(true);
+        trackEvent('signup_completed', { role: selectedRole });
         setSuccess('¡Cuenta registrada correctamente! Sincronizando perfil con CONEXA...');
         setIsAwaitingSessionSync(true);
       }
@@ -199,7 +256,17 @@ export const AuthPortal: React.FC = () => {
   };
 
   return (
-    <div className="w-full max-w-md mx-auto bg-white rounded-3xl border border-slate-200 shadow-2xl p-6 sm:p-8 space-y-6">
+    <div className="w-full max-w-md mx-auto bg-white rounded-3xl border border-slate-200 shadow-2xl p-6 sm:p-8 space-y-6 relative">
+      {onClose && (
+        <button
+          onClick={onClose}
+          className="absolute top-4 right-4 text-slate-400 hover:text-slate-700 bg-slate-100 hover:bg-slate-200 p-2 rounded-full transition-colors cursor-pointer"
+          aria-label="Cerrar ventana"
+        >
+          <X size={18} />
+        </button>
+      )}
+
       {/* Brand Header */}
       <div className="text-center space-y-2">
         <div className="w-14 h-14 bg-gradient-to-tr from-blue-600 to-indigo-600 rounded-2xl flex items-center justify-center mx-auto text-white shadow-lg rotate-3">
@@ -225,6 +292,7 @@ export const AuthPortal: React.FC = () => {
           onClick={() => {
             setIsLogin(false);
             setError(null);
+            trackEvent('signup_started', { role: selectedRole });
             if (auth.currentUser) {
               auth.signOut().catch(e => console.error("Error signing out prior user:", e));
             }
@@ -286,6 +354,24 @@ export const AuthPortal: React.FC = () => {
                 </button>
               </div>
             </div>
+
+            {/* Profession Input (Only when registering as Professional) */}
+            {selectedRole === 'PROFESSIONAL' && (
+              <div className="space-y-1">
+                <label className="text-[11px] font-black uppercase text-slate-500 tracking-wider">Oficio o Especialidad Principal</label>
+                <div className="relative">
+                  <Wrench className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400" size={16} />
+                  <input
+                    type="text"
+                    required
+                    placeholder="Ej. Electricista Matriculado, Plomero, Gasista..."
+                    value={professionNameInput}
+                    onChange={(e) => setProfessionNameInput(e.target.value)}
+                    className="w-full pl-10 pr-4 py-3 bg-slate-50 border border-slate-200 rounded-xl focus:bg-white focus:ring-2 focus:ring-emerald-500 outline-none transition-all text-slate-800"
+                  />
+                </div>
+              </div>
+            )}
 
             {/* Full Name Input */}
             <div className="space-y-1">

@@ -1,7 +1,8 @@
 import React, { createContext, useContext, useState, useEffect } from 'react';
 import { onAuthStateChanged } from 'firebase/auth';
 import { doc, setDoc, updateDoc, collection, getDocs, getDoc, onSnapshot } from 'firebase/firestore';
-import { auth, db, isFirebaseConfigured } from '../lib/firebase';
+import { auth, db, isFirebaseConfigured, cleanFirestoreData } from '../lib/firebase';
+import { captureAndStoreUtms, getStoredUtms } from '../utils/attribution';
 import { 
   UserProfile, Category, Profession, ServiceRequest, Quote, 
   Conversation, Message, Review, UserReport, VerificationRequest, 
@@ -186,6 +187,11 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const [onlyVerified, setOnlyVerified] = useState<boolean>(false);
 
   // Sync users to localStorage (for local preferences only - NOT for authorization)
+  // Capture UTM parameters on initial load
+  useEffect(() => {
+    captureAndStoreUtms();
+  }, []);
+
   useEffect(() => {
     if (isFirebaseConfigured) return;
     localStorage.setItem('conexa_users', JSON.stringify(users));
@@ -244,7 +250,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
                 trustScore: 50,
                 availabilityStatus: 'DISPONIBLE'
               };
-              await setDoc(userDocRef, defaultProfile);
+              await setDoc(userDocRef, cleanFirestoreData(defaultProfile));
               profileData = defaultProfile;
               console.log('[CONEXA AUTH] Perfil por defecto guardado en Firestore.');
             }
@@ -369,7 +375,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         if (querySnapshot.empty) {
           console.log(`[CONEXA SEED] Sembrando datos para ${collectionName}...`);
           for (const item of initialData) {
-            await setDoc(doc(db, collectionName, item.id || `doc-${Math.random()}`), item);
+            await setDoc(doc(db, collectionName, item.id || `doc-${Math.random()}`), cleanFirestoreData(item));
           }
         }
       } catch (err) {
@@ -676,7 +682,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
     if (db) {
       try {
-        await setDoc(doc(db, 'service_requests', newReq.id), newReq);
+        await setDoc(doc(db, 'service_requests', newReq.id), cleanFirestoreData(newReq));
       } catch (e) {
         console.warn('[Firestore] Error guardando solicitud de servicio:', e);
       }
@@ -706,7 +712,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
     if (db) {
       try {
-        await setDoc(doc(db, 'quotes', newQuote.id), newQuote);
+        await setDoc(doc(db, 'quotes', newQuote.id), cleanFirestoreData(newQuote));
         const reqRef = doc(db, 'service_requests', quoteData.requestId);
         const reqSnap = await getDoc(reqRef);
         if (reqSnap.exists()) {
@@ -884,18 +890,18 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
     if (db) {
       try {
-        await setDoc(doc(db, 'reviews', newRev.id), newRev);
+        await setDoc(doc(db, 'reviews', newRev.id), cleanFirestoreData(newRev));
         const proRef = doc(db, 'users', reviewData.professionalId);
         const proSnap = await getDoc(proRef);
         if (proSnap.exists()) {
           const u = proSnap.data() as UserProfile;
           const newCount = (u.reviewCount || 0) + 1;
           const newRating = Number(((((u.rating || 0) * (u.reviewCount || 0)) + reviewData.overallRating) / newCount).toFixed(1));
-          await updateDoc(proRef, {
+          await updateDoc(proRef, cleanFirestoreData({
             reviewCount: newCount,
             rating: newRating,
             jobsCompleted: (u.jobsCompleted || 0) + 1
-          });
+          }));
         }
       } catch (e) {
         console.warn('[Firestore] Error guardando reseña:', e);
@@ -945,7 +951,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     if (db) {
       try {
         const logId = `log-${Date.now()}`;
-        await setDoc(doc(db, 'admin_audit_logs', logId), logData);
+        await setDoc(doc(db, 'admin_audit_logs', logId), cleanFirestoreData(logData));
       } catch (err) {
         console.warn('[CONEXA AUDIT LOG] Error escribiendo log de auditoría en Firestore:', err);
       }
@@ -1015,7 +1021,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
     if (db) {
       try {
-        await setDoc(doc(db, 'reports', newReport.id), newReport);
+        await setDoc(doc(db, 'reports', newReport.id), cleanFirestoreData(newReport));
         setReports(prev => [newReport, ...prev]);
       } catch (e) {
         console.warn('[Firestore] Error guardando reporte:', e);
@@ -1132,22 +1138,33 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
   // Track Analytics Event (PII Free)
   const trackEvent = (eventName: string, context?: Record<string, any>) => {
+    const utms = getStoredUtms();
+    const mergedContext = {
+      ...context,
+      ...(utms.utm_source ? { utm_source: utms.utm_source } : {}),
+      ...(utms.utm_medium ? { utm_medium: utms.utm_medium } : {}),
+      ...(utms.utm_campaign ? { utm_campaign: utms.utm_campaign } : {}),
+      ...(utms.utm_content ? { utm_content: utms.utm_content } : {}),
+      ...(utms.utm_term ? { utm_term: utms.utm_term } : {})
+    };
+
     const newEv: AnalyticsEvent = {
-      id: `ev-${Date.now()}`,
+      id: `ev-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
       eventName,
-      userId: currentUser.id,
+      userId: currentUser?.id || 'anonymous_visitor',
       timestamp: new Date().toISOString(),
-      context
+      context: Object.keys(mergedContext).length > 0 ? mergedContext : undefined
     };
     setAnalyticsEvents(prev => [newEv, ...prev]);
+    console.log('[CONEXA ANALYTICS]', eventName, newEv);
   };
 
   const submitFeedback = (category: FeedbackItem['category'], comment: string) => {
     const newFb: FeedbackItem = {
       id: `fb-${Date.now()}`,
-      userId: currentUser.id,
-      userName: currentUser.name,
-      userRole: currentUser.role,
+      userId: currentUser?.id || 'anonymous',
+      userName: currentUser?.name || 'Visitante',
+      userRole: currentUser?.role || 'USER',
       category,
       comment,
       createdAt: 'Hace un instante',
@@ -1172,7 +1189,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
     if (db) {
       try {
-        await setDoc(doc(db, 'invite_codes', newCode.id), newCode);
+        await setDoc(doc(db, 'invite_codes', newCode.id), cleanFirestoreData(newCode));
         await logAdminAction('CREATE_INVITE_CODE', newCode.id, newCode.code);
         setInviteCodes(prev => [newCode, ...prev]);
       } catch (e: any) {
@@ -1192,7 +1209,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
     if (db) {
       try {
-        await updateDoc(doc(db, 'invite_codes', codeId), { isActive: newStatus });
+        await updateDoc(doc(db, 'invite_codes', codeId), cleanFirestoreData({ isActive: newStatus }));
         await logAdminAction('TOGGLE_INVITE_CODE', codeId, String(newStatus));
         setInviteCodes(prev => prev.map(c => c.id === codeId ? { ...c, isActive: newStatus } : c));
       } catch (e: any) {
@@ -1209,7 +1226,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const updateBetaConfig = async (updates: Partial<BetaConfig>) => {
     if (db) {
       try {
-        await setDoc(doc(db, 'beta_config', 'main'), { ...betaConfig, ...updates }, { merge: true });
+        await setDoc(doc(db, 'beta_config', 'main'), cleanFirestoreData({ ...betaConfig, ...updates }), { merge: true });
         await logAdminAction('UPDATE_BETA_CONFIG', 'main', JSON.stringify(updates));
         setBetaConfig(prev => ({ ...prev, ...updates }));
       } catch (e: any) {

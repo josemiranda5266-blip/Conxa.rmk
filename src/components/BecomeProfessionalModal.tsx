@@ -2,7 +2,7 @@ import React, { useState } from 'react';
 import { X, Wrench, ShieldCheck, CheckCircle2, Sparkles, MapPin, Clock, Award, Plus, Trash2 } from 'lucide-react';
 import { useApp } from '../context/AppContext';
 import { INITIAL_PROFESSIONS } from '../data/mockData';
-import { auth, db } from '../lib/firebase';
+import { auth, db, cleanFirestoreData } from '../lib/firebase';
 import { doc, setDoc } from 'firebase/firestore';
 
 interface BecomeProfessionalModalProps {
@@ -62,7 +62,7 @@ export const BecomeProfessionalModal: React.FC<BecomeProfessionalModalProps> = (
     if (auth?.currentUser && db) {
       try {
         const userDocRef = doc(db, 'users', auth.currentUser.uid);
-        await setDoc(userDocRef, updatedUser, { merge: true });
+        await setDoc(userDocRef, cleanFirestoreData(updatedUser), { merge: true });
         console.log('[CONEXA PROFILE] Perfil profesional guardado en Firestore para UID:', auth.currentUser.uid);
       } catch (err) {
         console.error('[CONEXA PROFILE] Error guardando en Firestore:', err);
